@@ -1,0 +1,373 @@
+:root {
+  color-scheme: dark;
+  --bg: #0c0e11;
+  --ink: #ffffff;
+  --quiet: rgba(255, 255, 255, 0.62);
+  --track: rgba(255, 255, 255, 0.14);
+  /* Four button rows plus the header stay inside a 390×700 portrait. */
+  --dial: min(
+    calc((100vw - 40px) / 2),
+    calc((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 132px) / 4)
+  );
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+body {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding:
+    calc(6px + env(safe-area-inset-top))
+    12px
+    calc(6px + env(safe-area-inset-bottom));
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+}
+
+@font-face {
+  font-family: "Staatliches";
+  src: url("/fonts/Staatliches-Regular.woff2?v=8") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+.brand {
+  display: block;
+  height: 28px;
+  width: auto;
+}
+
+.settings {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--quiet);
+}
+
+.settings svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.modes,
+.grid {
+  width: calc(var(--dial) * 2 + 10px);
+  display: grid;
+  grid-template-columns: var(--dial) var(--dial);
+  column-gap: 10px;
+  justify-content: center;
+}
+
+.modes {
+  row-gap: 18px;
+}
+
+.grid {
+  row-gap: 4px;
+}
+
+.mode {
+  /* Gauge stroke outer edge is 79.4% of the dial box. The whole button matches that. */
+  width: calc(var(--dial) * 0.794);
+  height: calc(var(--dial) * 0.794);
+  justify-self: center;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  container-type: inline-size;
+  filter: drop-shadow(0 10px 12px rgba(0, 0, 0, 0.5));
+}
+
+.mode[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+.bezel, .well {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.bezel {
+  position: relative;
+  padding: 6.5px;
+  background:
+    radial-gradient(circle at 30% 22%, #ffffff 0%, #e7ebef 14%, #b4bcc4 34%, #8b939c 52%, #d7dde3 74%, #9aa3ac 100%);
+  box-shadow:
+    inset 0 2px 1px rgba(255, 255, 255, 0.9),
+    inset 0 -4px 6px rgba(40, 44, 50, 0.45);
+}
+
+.bezel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  padding: 6.5px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.85), transparent 34%, rgba(40, 46, 54, 0.35) 76%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.well {
+  padding: 7px;
+  background: #0a0c0e;
+  box-shadow:
+    inset 0 2px 3px rgba(0, 0, 0, 0.85),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.65);
+  transition: background 180ms linear, box-shadow 180ms linear;
+}
+
+.face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 34% 26%, rgba(255, 255, 255, 0.92), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 34%, rgba(30, 34, 40, 0.16)),
+    repeating-linear-gradient(96deg, #d7dde3 0 1px, #f4f6f8 1px 2px, #c5ccd3 2px 3px, #e7ebef 3px 4px);
+  color: #1c2128;
+  font-family: "Staatliches", "Arial Narrow", sans-serif;
+  font-size: 16px;
+  font-size: 13cqi;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  line-height: 0.95;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.75);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    inset 0 -14px 16px rgba(40, 46, 54, 0.18);
+  transition: transform 90ms ease, box-shadow 90ms ease, background 180ms linear, color 180ms linear;
+}
+
+.mode.pressed .face {
+  transform: scale(0.96);
+  box-shadow:
+    inset 0 10px 14px rgba(20, 24, 28, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.line {
+  display: block;
+  width: 100%;
+  text-align: center;
+  line-height: 0.95;
+}
+
+.mode.on .face {
+  color: #1a1e24;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -12px 14px rgba(20, 24, 28, 0.16);
+}
+
+#electric.on .face {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.62), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(0, 0, 0, 0.06)),
+    #39f56a;
+}
+
+#engine.on .face {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.58), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(0, 0, 0, 0.08)),
+    #f0b429;
+}
+
+#cycle.on .face {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.7), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(0, 0, 0, 0.08)),
+    #3b82f6;
+}
+
+#boost.on .face {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.68), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.32), rgba(0, 0, 0, 0.08)),
+    #e23b2f;
+}
+
+.gauge { text-align: center; }
+
+.dial {
+  position: relative;
+  width: var(--dial);
+  height: var(--dial);
+  margin: 0 auto;
+}
+
+.dial svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.track {
+  fill: none;
+  stroke: var(--track);
+  stroke-width: 3.4;
+  stroke-linecap: round;
+}
+
+.fill {
+  fill: none;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+}
+
+.readout {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.num {
+  font-size: calc(var(--dial) * 0.22);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.unit {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  margin-top: calc(var(--dial) * 0.14);
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--quiet);
+}
+
+.label {
+  margin-top: 0;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--quiet);
+}
+
+.sheet[hidden] { display: none; }
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 22px 20px calc(22px + env(safe-area-inset-bottom));
+  background: #16181c;
+  border-radius: 18px 18px 0 0;
+}
+
+.panel h2 {
+  margin: 0 0 18px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 15px;
+}
+
+.row span:last-child { color: var(--quiet); }
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.actions button {
+  min-height: 48px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+}

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0c0e11">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Volt</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/css/app.css?v=10">
+  <link rel="modulepreload" href="/js/protocol.js?v=9">
+  <link rel="modulepreload" href="/js/gauges.js?v=6">
+  <link rel="preload" href="/brand/volt.png?v=7" as="image">
+  <link rel="preload" href="/fonts/Staatliches-Regular.woff2?v=8" as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+  <header class="top">
+    <img class="brand" src="/brand/volt.png?v=7" alt="Volt" width="113" height="28">
+    <button class="settings" type="button" id="open-settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12.41 5.46 14 3.07l2.9 1.2-.57 2.82.58.58 2.82-.57L20.93 10l-2.39 1.59v.82L20.93 14l-1.2 2.9-2.82-.57-.58.58.57 2.82-2.9 1.2-1.59-2.39h-.82L10 20.93l-2.9-1.2.57-2.82-.58-.58-2.82.57L3.07 14l2.39-1.59v-.82L3.07 10l1.2-2.9 2.82.57.58-.58L7.1 4.27 10 3.07l1.59 2.39h.82z"/>
+        <circle cx="12" cy="12" r="2.45"/>
+      </svg>
+    </button>
+  </header>
+  <main class="stage">
+    <div class="modes">
+      <button class="mode" type="button" id="electric" aria-pressed="false" aria-label="Electric Mode">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">
+              <span class="line">Electric</span>
+              <span class="line">Mode</span>
+            </span>
+          </span>
+        </span>
+      </button>
+      <button class="mode" type="button" id="engine" aria-pressed="false" aria-label="Engine Mode">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">
+              <span class="line">Engine</span>
+              <span class="line">Mode</span>
+            </span>
+          </span>
+        </span>
+      </button>
+      <button class="mode" type="button" id="cycle" aria-pressed="false" aria-label="Cycle Mode">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">
+              <span class="line">Cycle</span>
+              <span class="line">Mode</span>
+            </span>
+          </span>
+        </span>
+      </button>
+      <button class="mode" type="button" id="boost" aria-pressed="false" aria-label="Battery Boost">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">
+              <span class="line">Battery</span>
+              <span class="line">Boost</span>
+            </span>
+          </span>
+        </span>
+      </button>
+    </div>
+    <section class="grid" aria-label="Gauges">
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-battery" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-battery" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-battery" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-battery"></path>
+            <path class="fill" id="fill-battery" stroke="url(#grad-battery)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-battery">—</div>
+            <div class="unit">%</div>
+          </div>
+        </div>
+        <div class="label">Battery</div>
+      </article>
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-output" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-output" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-output" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-output"></path>
+            <path class="fill" id="fill-output" stroke="url(#grad-output)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-output">—</div>
+            <div class="unit">kW</div>
+          </div>
+        </div>
+        <div class="label">Output</div>
+      </article>
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-rpm" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-rpm" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-rpm" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-rpm"></path>
+            <path class="fill" id="fill-rpm" stroke="url(#grad-rpm)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-rpm">—</div>
+            <div class="unit">rpm</div>
+          </div>
+        </div>
+        <div class="label">RPM</div>
+      </article>
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-economy" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-economy" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-economy" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-economy"></path>
+            <path class="fill" id="fill-economy" stroke="url(#grad-economy)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-economy">—</div>
+            <div class="unit" id="unit-economy">mpg</div>
+          </div>
+        </div>
+        <div class="label" id="label-economy">MPG</div>
+      </article>
+    </section>
+  </main>
+  <div class="sheet" id="sheet" hidden>
+    <button class="scrim" type="button" id="scrim" aria-label="Close"></button>
+    <div class="panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+      <div class="row"><span>Adapter</span><span id="adapter">Not Connected</span></div>
+      <div class="actions">
+        <button type="button" id="connect">Connect</button>
+        <button type="button" id="close-settings">Close</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/js/app.js?v=9"></script>
+</body>
+</html>

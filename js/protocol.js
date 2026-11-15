@@ -1,0 +1,359 @@
+// 2012 Volt, Veepeak OBDCheck BLE. The ELM327 adds the ISO-TP length byte.
+// Engine-off is the only module write. RPM on the gauge is PID 01 0C.
+
+export const TESTER = "3E";
+export const FORCE_OFF = "AE 31 05 00 00 00 00";
+export const RELEASE = "AE 00 00 00 00 00 00";
+
+export const INIT = ["ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP6"];
+
+export const BLE_SERVICES = [
+  "0000fff0-0000-1000-8000-00805f9b34fb",
+  "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+];
+
+export const BLE_LAYOUTS = [
+  {
+    service: "0000fff0-0000-1000-8000-00805f9b34fb",
+    notify: "0000fff1-0000-1000-8000-00805f9b34fb",
+    write: "0000fff2-0000-1000-8000-00805f9b34fb",
+  },
+  {
+    service: "49535343-fe7d-4ae5-8fa9-9fafd205e455",
+    write: "49535343-6daa-4d02-abf6-19569aca69fe",
+    notify: "49535343-aca3-481c-91ec-d85e28a60318",
+  },
+];
+
+export function dataByteCount(cmd) {
+  return cmd.trim().split(/\s+/).filter(Boolean).length;
+}
+
+export function signed16(hi, lo) {
+  let v = ((hi & 0xff) << 8) | (lo & 0xff);
+  if (v & 0x8000) v -= 0x10000;
+  return v;
+}
+
+export function decodeVoltage(hi, lo) {
+  return signed16(hi, lo) / 64;
+}
+
+export function decodeCurrent(hi, lo) {
+  return signed16(hi, lo) / 20;
+}
+
+export function kilowatts(volts, amps) {
+  return (volts * amps) / 1000;
+}
+
+export function decodeRpm(hi, lo) {
+  return (hi * 256 + lo) / 4;
+}
+
+export function decodeSpeedKmh(a) {
+  return a;
+}
+
+export function decodeFuelLph(hi, lo) {
+  return (hi * 256 + lo) * 0.05;
+}
+
+export function decodeMaf(hi, lo) {
+  return ((hi & 0xff) * 256 + (lo & 0xff)) / 100;
+}
+
+export function decodeSoc(a) {
+  return (a * 100) / 255;
+}
+
+export function holdFloor(boost) {
+  return boost ? 18 : 24;
+}
+
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function underFloor(soc, boost, lockUntil) {
+  if (!numeric(soc)) return false;
+  if (soc <= holdFloor(boost)) return true;
+  if (lockUntil != null && soc < lockUntil) return true;
+  return false;
+}
+
+export function electricBlocked(state) {
+  const row = state || {};
+  return underFloor(row.soc, row.boost, row.lockUntil);
+}
+
+function cloneDrive(state) {
+  const row = state || {};
+  const mode = row.mode === "electric" || row.mode === "engine" || row.mode === "cycle" ? row.mode : "off";
+  return {
+    mode,
+    boost: !!row.boost,
+    phase: row.phase === "engine" ? "engine" : "battery",
+    soc: numeric(row.soc) ? row.soc : null,
+    lockUntil: numeric(row.lockUntil) ? row.lockUntil : null,
+    previousPlan: row.previousPlan === "force-off" || row.previousPlan === "release" ? row.previousPlan : "none",
+  };
+}
+
+function finish(next, plan) {
+  if (plan === "force-off") next.previousPlan = "force-off";
+  else if (plan === "release") next.previousPlan = "none";
+  return { state: next, plan };
+}
+
+function leaveHold(next) {
+  if (next.previousPlan === "force-off") return finish(next, "release");
+  return { state: next, plan: "none" };
+}
+
+function stepSoc(next) {
+  const soc = next.soc;
+  if (!numeric(soc)) {
+    const holding = next.mode === "electric" || (next.mode === "cycle" && next.phase !== "engine");
+    if (holding && next.previousPlan === "force-off") return finish(next, "force-off");
+    return leaveHold(next);
+  }
+  const floor = holdFloor(next.boost);
+  if (next.mode === "electric") {
+    if (soc <= floor) {
+      next.mode = "engine";
+      next.phase = "engine";
+      next.lockUntil = soc + 2;
+      return finish(next, "release");
+    }
+    if (next.lockUntil != null && soc < next.lockUntil) {
+      next.mode = "engine";
+      next.phase = "engine";
+      return finish(next, "release");
+    }
+    if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
+    next.phase = "battery";
+    return finish(next, "force-off");
+  }
+  if (next.mode === "engine") {
+    next.phase = "engine";
+    return leaveHold(next);
+  }
+  if (next.mode === "cycle") {
+    if (next.phase !== "engine") {
+      if (soc <= floor) {
+        next.phase = "engine";
+        next.lockUntil = soc + 2;
+        return finish(next, "release");
+      }
+      if (next.lockUntil != null && soc < next.lockUntil) {
+        next.phase = "engine";
+        return finish(next, "release");
+      }
+      if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
+      next.phase = "battery";
+      return finish(next, "force-off");
+    }
+    if (soc >= 32) {
+      next.phase = "battery";
+      if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
+      return finish(next, "force-off");
+    }
+    return leaveHold(next);
+  }
+  return leaveHold(next);
+}
+
+export function stepDrive(state, event) {
+  const next = cloneDrive(state);
+  const kind = event && event.type;
+  if (kind === "boost") {
+    next.boost = !next.boost;
+    return { state: next, plan: "none" };
+  }
+  if (kind === "engine") {
+    if (next.mode === "engine") {
+      next.mode = "off";
+      next.phase = "battery";
+    } else {
+      next.mode = "engine";
+      next.phase = "engine";
+    }
+    return leaveHold(next);
+  }
+  if (kind === "electric") {
+    if (underFloor(next.soc, next.boost, next.lockUntil)) return { state: next, plan: "none" };
+    next.mode = "electric";
+    next.phase = "battery";
+    return finish(next, "force-off");
+  }
+  if (kind === "cycle") {
+    if (next.mode === "cycle") {
+      if (next.phase === "engine") {
+        next.mode = "engine";
+        next.phase = "engine";
+        return leaveHold(next);
+      }
+      next.mode = "electric";
+      next.phase = "battery";
+      return finish(next, "force-off");
+    }
+    next.mode = "cycle";
+    if (underFloor(next.soc, next.boost, next.lockUntil)) {
+      next.phase = "engine";
+      return finish(next, "release");
+    }
+    next.phase = "battery";
+    return finish(next, "force-off");
+  }
+  if (kind === "refuse") {
+    next.mode = "off";
+    next.phase = "battery";
+    return leaveHold(next);
+  }
+  if (kind === "soc") {
+    next.soc = numeric(event.soc) ? event.soc : null;
+    return stepSoc(next);
+  }
+  return { state: next, plan: "none" };
+}
+
+function compactHex(text) {
+  return String(text || "").toUpperCase().replace(/[^0-9A-F]/g, "");
+}
+
+function bytesAfter(compact, marker, n) {
+  const i = compact.indexOf(marker);
+  if (i < 0) return null;
+  const start = i + marker.length;
+  if (compact.length < start + n * 2) return null;
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    out.push(parseInt(compact.slice(start + k * 2, start + k * 2 + 2), 16));
+  }
+  return out;
+}
+
+export function parseReply(text) {
+  const compact = compactHex(text);
+  const out = {};
+  const rpm = bytesAfter(compact, "410C", 2);
+  if (rpm) out.rpm = decodeRpm(rpm[0], rpm[1]);
+  const speed = bytesAfter(compact, "410D", 1);
+  if (speed) out.speedKmh = speed[0];
+  const fuel = bytesAfter(compact, "415E", 2);
+  if (fuel) out.fuelLph = decodeFuelLph(fuel[0], fuel[1]);
+  const maf = bytesAfter(compact, "4110", 2);
+  if (maf) out.mafGs = decodeMaf(maf[0], maf[1]);
+  const soc = bytesAfter(compact, "415B", 1);
+  if (soc) out.soc = decodeSoc(soc[0]);
+  const volts = bytesAfter(compact, "622429", 2);
+  if (volts) out.voltage = decodeVoltage(volts[0], volts[1]);
+  const amps = bytesAfter(compact, "622414", 2);
+  if (amps) out.current = decodeCurrent(amps[0], amps[1]);
+  return out;
+}
+
+export function replySilent(text) {
+  const raw = String(text || "").toUpperCase();
+  if (raw.includes("NO DATA") || raw.includes("UNABLE") || raw.includes("ERROR")) return true;
+  const compact = compactHex(raw);
+  return compact.includes("7F") && !compact.includes("410C") && !compact.includes("410D")
+    && !compact.includes("415E") && !compact.includes("4110") && !compact.includes("415B")
+    && !compact.includes("622429") && !compact.includes("622414");
+}
+
+export function holdRefused(text) {
+  const compact = compactHex(text);
+  if (!compact.includes("7F")) return false;
+  if (compact.includes("6E")) return false;
+  return true;
+}
+
+export function economy(state) {
+  const row = state || {};
+  if (!numeric(row.speedKmh)) return { label: "MPG", value: null };
+  const mph = row.speedKmh * 0.621371;
+  if (mph < 1) return { label: "MPG", value: 0 };
+  const fuelKnown = row.fuelKnown !== false && numeric(row.fuelLph);
+  if (fuelKnown) {
+    if (row.fuelLph >= 0.05) return { label: "MPG", value: mph / (row.fuelLph * 0.264172) };
+    return { label: "MPG", value: 40 };
+  }
+  const mafKnown = row.mafKnown !== false && numeric(row.mafGs);
+  if (mafKnown) {
+    if (row.mafGs >= 0.3) {
+      const gph = (row.mafGs / 14.7) * 3600 / 453.592 / 6.17;
+      return { label: "MPG", value: mph / gph };
+    }
+    return { label: "MPG", value: 40 };
+  }
+  return { label: "MPG", value: null };
+}
+
+export function holdCommands() {
+  return {
+    ok: true,
+    commands: ["ATSH 7E1", TESTER, FORCE_OFF],
+  };
+}
+
+export function releaseCommands() {
+  return ["ATSH 7E1", RELEASE];
+}
+
+export function onHoldRefused(queue, asserted) {
+  return {
+    queue: queue.filter((item) => item.tag !== "hold"),
+    asserted: false,
+    electric: false,
+    commands: asserted ? releaseCommands() : [],
+  };
+}
+
+// iOS Web Bluetooth advertises write-without-response, then the write never reaches the car.
+export function writePlan(properties) {
+  const props = properties || {};
+  const withResponse = !!props.write;
+  const withoutResponse = !!props.writeWithoutResponse;
+  if (withoutResponse && !withResponse) {
+    return ["writeValueWithoutResponse", "writeValueWithResponse"];
+  }
+  return ["writeValueWithResponse", "writeValueWithoutResponse"];
+}
+
+// One ELM line is at most 20 bytes per write. A spaced line that does not fit is compacted, then split.
+export function packLine(cmd) {
+  const trimmed = String(cmd == null ? "" : cmd).trim();
+  const spaced = trimmed + "\r";
+  const line = spaced.length <= 20 ? spaced : trimmed.replace(/ /g, "") + "\r";
+  const chunks = [];
+  for (let i = 0; i < line.length; i += 20) chunks.push(line.slice(i, i + 20));
+  return chunks;
+}
+
+export const RECONNECT_CAP = 5;
+
+export function reconnectPlan(input) {
+  const row = input || {};
+  const attempts = Number(row.attempts) || 0;
+  if (row.userDisconnect || attempts >= RECONNECT_CAP) {
+    return { retry: false, text: "Not Connected", wait: 0 };
+  }
+  const waits = [500, 1000, 2000, 2000, 2000];
+  return { retry: true, text: "Reconnecting", wait: waits[Math.min(attempts, waits.length - 1)] };
+}
+
+export function adapterLine(input) {
+  const row = input || {};
+  if (!row.hasBluetooth) return "No Bluetooth";
+  if (row.availability === false) return "Bluetooth Off";
+  const errorName = row.errorName || "";
+  if (errorName === "NotAllowedError" || errorName === "SecurityError") return "Allow Nearby Devices";
+  if (row.reconnecting) return "Reconnecting";
+  if (row.connected) {
+    const name = row.name || "Adapter";
+    return row.noReply ? name + " · No Reply" : name;
+  }
+  return "Not Connected";
+}
