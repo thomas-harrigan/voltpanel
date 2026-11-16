@@ -76,21 +76,17 @@ function numeric(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-// A new Electric press needs 46%, or 22% with Boost. No charge reading stays pressable.
-// lockUntil is not a gate.
-export function electricBlocked(state) {
-  const row = state || {};
-  const soc = row.soc;
+function underFloor(soc, boost, lockUntil) {
   if (!numeric(soc)) return false;
-  if (row.boost) return soc < 22;
-  return soc < 46;
+  if (soc <= holdFloor(boost)) return true;
+  if (boost) return false;
+  if (lockUntil != null && soc < lockUntil) return true;
+  return false;
 }
 
-// The hold lets go at 45% without Boost, and below 22% with Boost. 22% itself continues.
-function aboveRelease(soc, boost) {
-  if (!numeric(soc)) return true;
-  if (boost) return soc >= 22;
-  return soc > holdFloor(false);
+export function electricBlocked(state) {
+  const row = state || {};
+  return underFloor(row.soc, row.boost, row.lockUntil);
 }
 
 function cloneDrive(state) {
@@ -121,7 +117,7 @@ function engineShowing(next) {
   return next.mode === "engine" || (next.mode === "cycle" && next.phase === "engine");
 }
 
-// Boost is done. Cycle stays in the engine phase until 46%.
+// Boost has reached the bottom. Leave no mode on until the normal cycle can take the battery back at 46%.
 function endBoost(next) {
   next.boost = false;
   next.lockUntil = null;
@@ -142,21 +138,21 @@ function stepSoc(next) {
     if (holding && next.previousPlan === "force-off") return finish(next, "force-off");
     return leaveHold(next);
   }
-  // Electric holds through 22% with Boost. Cycle, and every other mode, still ends Boost at 22%.
-  if (next.boost && soc <= 22 && !(next.mode === "electric" && soc === 22)) return endBoost(next);
-  if (next.boost && engineShowing(next) && soc >= 22) {
+  if (next.boost && soc <= 22) return endBoost(next);
+  if (next.boost && engineShowing(next)) {
     next.mode = "electric";
     next.phase = "battery";
     return finish(next, "force-off");
   }
   const floor = holdFloor(next.boost);
   if (next.mode === "electric") {
-    if (!aboveRelease(soc, next.boost)) {
-      next.lockUntil = null;
+    if (underFloor(soc, next.boost, next.lockUntil)) {
+      if (soc <= floor) next.lockUntil = soc + 2;
       next.mode = "engine";
       next.phase = "engine";
       return finish(next, "release");
     }
+    if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
     next.phase = "battery";
     return finish(next, "force-off");
   }
@@ -165,7 +161,7 @@ function stepSoc(next) {
     return leaveHold(next);
   }
   if (next.mode === "cycle") {
-    // One point above the floor turns the battery back on. lockUntil is not a gate.
+    // One point above the floor turns the battery back on. lockUntil belongs to Electric.
     const backOn = floor + 1;
     if (next.phase !== "engine") {
       if (soc <= floor) {
@@ -189,7 +185,7 @@ export function stepDrive(state, event) {
   const kind = event && event.type;
   if (kind === "boost") {
     next.boost = !next.boost;
-    if (next.boost && engineShowing(next) && (!numeric(next.soc) || next.soc >= 22)) {
+    if (next.boost && engineShowing(next)) {
       next.mode = "electric";
       next.phase = "battery";
       return finish(next, "force-off");
@@ -207,8 +203,7 @@ export function stepDrive(state, event) {
     return leaveHold(next);
   }
   if (kind === "electric") {
-    const keep = next.mode === "electric" && aboveRelease(next.soc, next.boost);
-    if (electricBlocked(next) && !keep) return { state: next, plan: "none" };
+    if (underFloor(next.soc, next.boost, next.lockUntil)) return { state: next, plan: "none" };
     next.mode = "electric";
     next.phase = "battery";
     return finish(next, "force-off");

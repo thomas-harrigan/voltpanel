@@ -29,7 +29,7 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-} from "./protocol.js?v=23";
+} from "./protocol.js?v=22";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -119,16 +119,15 @@ function setText(el, text) {
 }
 
 function paintModes() {
-  const holding = drive.mode === "electric";
-  const blocked = electricBlocked(drive);
+  const locked = electricBlocked(drive);
   const cycle = drive.mode === "cycle";
   const enginePhase = drive.phase === "engine";
-  const electricOn = holding || (cycle && !enginePhase);
+  const electricOn = (drive.mode === "electric" || (cycle && !enginePhase)) && !locked;
   const engineOn = drive.mode === "engine" || (cycle && enginePhase);
   const electricBtn = $("electric");
   electricBtn.classList.toggle("on", electricOn);
   electricBtn.setAttribute("aria-pressed", electricOn ? "true" : "false");
-  if (blocked && !holding) electricBtn.setAttribute("aria-disabled", "true");
+  if (locked) electricBtn.setAttribute("aria-disabled", "true");
   else electricBtn.removeAttribute("aria-disabled");
   const engineBtn = $("engine");
   engineBtn.classList.toggle("on", engineOn);
@@ -257,14 +256,15 @@ function loadDrive() {
     if (mode !== "off" && mode !== "electric" && mode !== "engine" && mode !== "cycle") {
       mode = legacy ? "electric" : "off";
     }
-    localStorage.removeItem("voltpanel.lockUntil");
+    const raw = localStorage.getItem("voltpanel.lockUntil");
+    const lockNum = raw == null || raw === "" ? null : Number(raw);
     localStorage.removeItem("voltpanel.electric");
     return {
       mode,
       boost: localStorage.getItem("voltpanel.boost") === "1",
       phase: restorePhase(mode, localStorage.getItem("voltpanel.phase")),
       soc: null,
-      lockUntil: null,
+      lockUntil: lockNum != null && Number.isFinite(lockNum) ? lockNum : null,
       previousPlan: mode === "electric" ? "force-off" : "none",
     };
   } catch {
@@ -312,7 +312,8 @@ function persistDrive() {
     localStorage.setItem("voltpanel.boost", drive.boost ? "1" : "0");
     if (drive.mode === "cycle") localStorage.setItem("voltpanel.phase", drive.phase === "engine" ? "engine" : "battery");
     else localStorage.removeItem("voltpanel.phase");
-    localStorage.removeItem("voltpanel.lockUntil");
+    if (drive.lockUntil == null) localStorage.removeItem("voltpanel.lockUntil");
+    else localStorage.setItem("voltpanel.lockUntil", String(drive.lockUntil));
     localStorage.removeItem("voltpanel.electric");
   } catch {
     /* private mode */
@@ -386,12 +387,7 @@ function applyDrive(event) {
 
 function press(type) {
   drive.soc = state.soc;
-  if (type === "electric" && electricBlocked(drive)) {
-    if (drive.mode !== "electric") return;
-    const soc = drive.soc;
-    const live = drive.boost ? soc >= 22 : soc > 45;
-    if (!live) return;
-  }
+  if (type === "electric" && electricBlocked(drive)) return;
   applyDrive({ type });
   paintLive();
 }
