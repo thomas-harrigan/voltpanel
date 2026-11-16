@@ -69,7 +69,7 @@ export function decodeSoc(a) {
 }
 
 export function holdFloor(boost) {
-  return boost ? 18 : 24;
+  return boost ? 22 : 45;
 }
 
 function numeric(value) {
@@ -79,6 +79,7 @@ function numeric(value) {
 function underFloor(soc, boost, lockUntil) {
   if (!numeric(soc)) return false;
   if (soc <= holdFloor(boost)) return true;
+  if (boost) return false;
   if (lockUntil != null && soc < lockUntil) return true;
   return false;
 }
@@ -121,13 +122,8 @@ function stepSoc(next) {
   }
   const floor = holdFloor(next.boost);
   if (next.mode === "electric") {
-    if (soc <= floor) {
-      next.mode = "engine";
-      next.phase = "engine";
-      next.lockUntil = soc + 2;
-      return finish(next, "release");
-    }
-    if (next.lockUntil != null && soc < next.lockUntil) {
+    if (underFloor(soc, next.boost, next.lockUntil)) {
+      if (soc <= floor) next.lockUntil = soc + 2;
       next.mode = "engine";
       next.phase = "engine";
       return finish(next, "release");
@@ -142,12 +138,8 @@ function stepSoc(next) {
   }
   if (next.mode === "cycle") {
     if (next.phase !== "engine") {
-      if (soc <= floor) {
-        next.phase = "engine";
-        next.lockUntil = soc + 2;
-        return finish(next, "release");
-      }
-      if (next.lockUntil != null && soc < next.lockUntil) {
+      if (underFloor(soc, next.boost, next.lockUntil)) {
+        if (soc <= floor) next.lockUntil = soc + 2;
         next.phase = "engine";
         return finish(next, "release");
       }
@@ -155,7 +147,7 @@ function stepSoc(next) {
       next.phase = "battery";
       return finish(next, "force-off");
     }
-    if (soc >= 32) {
+    if (soc >= 55) {
       next.phase = "battery";
       if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
       return finish(next, "force-off");

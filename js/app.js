@@ -28,7 +28,7 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-} from "./protocol.js?v=17";
+} from "./protocol.js?v=19";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=7";
 
 const $ = (id) => document.getElementById(id);
