@@ -67,30 +67,102 @@ test("rpm fuel maf and soc", () => {
   assert.ok(Math.abs(decodeSoc(41) - 16.078) < 0.01);
 });
 
-test("boost off blocks 45 and allows 45.1", () => {
+test("boost off, soc 45.9, press Electric, mode stays off", () => {
   assert.equal(holdFloor(false), 45);
-  assert.equal(stepDrive(drive({ soc: 45 }), { type: "electric" }).state.mode, "off");
-  assert.equal(stepDrive(drive({ soc: 22.1 }), { type: "electric" }).state.mode, "off");
-  const allow = stepDrive(drive({ soc: 45.1 }), { type: "electric" });
-  assert.equal(allow.state.mode, "electric");
-  assert.equal(allow.plan, "force-off");
+  assert.equal(electricBlocked({ soc: 45.9, boost: false }), true);
+  const pressed = stepDrive(drive({ soc: 45.9 }), { type: "electric" });
+  assert.equal(pressed.state.mode, "off");
+  assert.equal(pressed.plan, "none");
 });
 
-test("boost on blocks 22 and allows 22.1", () => {
+test("boost off, soc 46, press Electric, mode electric, plan force-off", () => {
+  const pressed = stepDrive(drive({ soc: 46 }), { type: "electric" });
+  assert.equal(pressed.state.mode, "electric");
+  assert.equal(pressed.state.phase, "battery");
+  assert.equal(pressed.plan, "force-off");
+  assert.equal(electricBlocked(pressed.state), false);
+});
+
+test("boost off, Electric hold at 45.1 stays electric and force-off, lockUntil is null", () => {
+  const held = stepDrive(drive({ mode: "electric", phase: "battery", soc: 60, previousPlan: "force-off" }), { type: "soc", soc: 45.1 });
+  assert.equal(held.state.mode, "electric");
+  assert.equal(held.state.phase, "battery");
+  assert.equal(held.plan, "force-off");
+  assert.equal(held.state.lockUntil, null);
+  const again = stepDrive(held.state, { type: "electric" });
+  assert.equal(again.state.mode, "electric");
+  assert.equal(again.plan, "force-off");
+  assert.equal(again.state.lockUntil, null);
+});
+
+test("boost off, Electric hold polled at 45 releases to engine, lockUntil null, plan release", () => {
+  const released = stepDrive(drive({ mode: "electric", phase: "battery", soc: 60, previousPlan: "force-off" }), { type: "soc", soc: 45 });
+  assert.equal(released.state.mode, "engine");
+  assert.equal(released.state.phase, "engine");
+  assert.equal(released.state.lockUntil, null);
+  assert.equal(released.plan, "release");
+  const again = stepDrive(released.state, { type: "electric" });
+  assert.equal(again.state.mode, "engine");
+  assert.equal(again.plan, "none");
+  const lower = stepDrive(drive({ mode: "electric", phase: "battery", soc: 60, previousPlan: "force-off" }), { type: "soc", soc: 44.5 });
+  assert.equal(lower.state.mode, "engine");
+  assert.equal(lower.state.phase, "engine");
+  assert.equal(lower.state.lockUntil, null);
+  assert.equal(lower.plan, "release");
+});
+
+test("a stale lockUntil of 47 does not block a press at soc 46", () => {
+  const pressed = stepDrive(drive({ soc: 46, lockUntil: 47 }), { type: "electric" });
+  assert.equal(pressed.state.mode, "electric");
+  assert.equal(pressed.plan, "force-off");
+  assert.equal(stepDrive(drive({ soc: 30, lockUntil: 30 }), { type: "electric" }).state.mode, "off");
+  assert.equal(stepDrive(drive({ soc: 46.9, lockUntil: 47 }), { type: "electric" }).state.mode, "electric");
+});
+
+test("no charge reading keeps Electric pressable", () => {
+  assert.equal(electricBlocked({ soc: null }), false);
+  assert.equal(electricBlocked({}), false);
+  const pressed = stepDrive(drive({ soc: null }), { type: "electric" });
+  assert.equal(pressed.state.mode, "electric");
+  assert.equal(pressed.plan, "force-off");
+  const row = drive();
+  delete row.soc;
+  assert.equal(stepDrive(row, { type: "electric" }).state.mode, "electric");
+});
+
+test("boost on, soc 22, press Electric, mode electric", () => {
   assert.equal(holdFloor(true), 22);
-  assert.equal(stepDrive(drive({ soc: 22, boost: true }), { type: "electric" }).state.mode, "off");
-  const low = stepDrive(drive({ soc: 22.1, boost: true }), { type: "electric" });
-  assert.equal(low.state.mode, "electric");
-  assert.equal(low.plan, "force-off");
+  assert.equal(electricBlocked({ soc: 22, boost: true }), false);
+  const pressed = stepDrive(drive({ soc: 22, boost: true }), { type: "electric" });
+  assert.equal(pressed.state.mode, "electric");
+  assert.equal(pressed.plan, "force-off");
   assert.equal(stepDrive(drive({ soc: 45, boost: true }), { type: "electric" }).state.mode, "electric");
+  assert.equal(stepDrive(drive({ soc: 22.1, boost: true, lockUntil: 23.5 }), { type: "electric" }).state.mode, "electric");
 });
 
-test("electric at 44.5 with boost off trips to engine and locks 2 points up", () => {
-  const result = stepDrive(drive({ mode: "electric", phase: "battery", soc: 60, previousPlan: "force-off" }), { type: "soc", soc: 44.5 });
-  assert.equal(result.state.mode, "engine");
-  assert.equal(result.state.phase, "engine");
-  assert.equal(result.state.lockUntil, 46.5);
-  assert.notEqual(result.plan, "force-off");
+test("boost on, soc 21.9, press Electric, mode stays off", () => {
+  assert.equal(electricBlocked({ soc: 21.9, boost: true }), true);
+  const pressed = stepDrive(drive({ soc: 21.9, boost: true }), { type: "electric" });
+  assert.equal(pressed.state.mode, "off");
+  assert.equal(pressed.plan, "none");
+});
+
+test("boost on, Electric at 21.9 ends Boost and soc 46 returns to battery force-off", () => {
+  const dropped = stepDrive(drive({ mode: "electric", boost: true, phase: "battery", soc: 40, previousPlan: "force-off" }), { type: "soc", soc: 21.9 });
+  assert.equal(dropped.state.boost, false);
+  assert.equal(dropped.state.mode, "cycle");
+  assert.equal(dropped.state.phase, "engine");
+  assert.equal(dropped.plan, "release");
+  assert.equal(dropped.state.lockUntil, null);
+  const back = stepDrive(dropped.state, { type: "soc", soc: 46 });
+  assert.equal(back.state.mode, "cycle");
+  assert.equal(back.state.phase, "battery");
+  assert.equal(back.plan, "force-off");
+  const held = stepDrive(drive({ mode: "electric", boost: true, soc: 40, previousPlan: "force-off" }), { type: "soc", soc: 22 });
+  assert.equal(held.state.mode, "electric");
+  assert.equal(held.state.boost, true);
+  assert.equal(held.plan, "force-off");
+  assert.equal(held.state.lockUntil, null);
 });
 
 test("electric at 21.5 with boost on turns boost off and charges toward 46", () => {
@@ -109,19 +181,7 @@ test("electric at 21.5 with boost on turns boost off and charges toward 46", () 
   assert.equal(back.plan, "force-off");
 });
 
-test("the lock blocks electric until soc reaches it", () => {
-  const under = stepDrive(drive({ soc: 30, lockUntil: 30 }), { type: "electric" });
-  assert.equal(under.state.mode, "off");
-  assert.equal(under.plan, "none");
-  const blocked = stepDrive(drive({ soc: 46.9, lockUntil: 47 }), { type: "electric" });
-  assert.equal(blocked.state.mode, "off");
-  assert.equal(blocked.plan, "none");
-  const open = stepDrive(drive({ soc: 47, lockUntil: 47 }), { type: "electric" });
-  assert.equal(open.state.mode, "electric");
-  assert.equal(open.plan, "force-off");
-});
-
-test("boost on, soc 30, lockUntil 47, an electric press sets mode electric", () => {
+test("boost on, soc 30, a stale lockUntil does not block Electric", () => {
   const armed = stepDrive(drive({ mode: "engine", soc: 30, lockUntil: 47 }), { type: "boost" });
   assert.equal(armed.state.mode, "electric");
   assert.equal(armed.state.phase, "battery");
@@ -135,24 +195,6 @@ test("boost on, soc 30, lockUntil 47, an electric press sets mode electric", () 
   assert.equal(polled.state.mode, "electric");
   assert.equal(polled.plan, "force-off");
   assert.equal(polled.state.lockUntil, 47);
-});
-
-test("boost on, soc 22.1, lockUntil 23.5, electric press works", () => {
-  const pressed = stepDrive(drive({ soc: 22.1, lockUntil: 23.5, boost: true }), { type: "electric" });
-  assert.equal(pressed.state.mode, "electric");
-  assert.equal(pressed.plan, "force-off");
-});
-
-test("boost on, soc 22, lockUntil null, electric press stays off", () => {
-  const pressed = stepDrive(drive({ soc: 22, lockUntil: null, boost: true }), { type: "electric" });
-  assert.equal(pressed.state.mode, "off");
-  assert.equal(pressed.plan, "none");
-});
-
-test("boost off, soc 46.9, lockUntil 47, electric press stays off", () => {
-  const pressed = stepDrive(drive({ soc: 46.9, lockUntil: 47, boost: false }), { type: "electric" });
-  assert.equal(pressed.state.mode, "off");
-  assert.equal(pressed.plan, "none");
 });
 
 test("engine mode does not shut off for charge power", () => {
@@ -241,18 +283,28 @@ test("boost on while engine is showing selects electric", () => {
   assert.equal(batteryPhase.state.phase, "battery");
   assert.equal(batteryPhase.state.boost, true);
   assert.equal(batteryPhase.plan, "none");
+  const at21 = stepDrive(drive({ mode: "engine", phase: "engine", soc: 21 }), { type: "boost" });
+  assert.equal(at21.state.boost, true);
+  assert.equal(at21.state.mode, "engine");
+  assert.equal(at21.state.phase, "engine");
+  assert.notEqual(at21.plan, "force-off");
+  const unread = stepDrive(drive({ mode: "engine", phase: "engine", soc: null }), { type: "boost" });
+  assert.equal(unread.state.mode, "electric");
+  assert.equal(unread.state.boost, true);
+  assert.equal(unread.plan, "force-off");
 });
 
-test("boost can be pressed again at 22 and the next reading turns it off", () => {
+test("boost pressed at 22 while the engine is showing selects Electric and the hold continues", () => {
   const pressed = stepDrive(drive({ mode: "cycle", phase: "engine", soc: 22, boost: false, previousPlan: "none" }), { type: "boost" });
   assert.equal(pressed.state.boost, true);
   assert.equal(pressed.state.mode, "electric");
   assert.equal(pressed.plan, "force-off");
   const again = stepDrive(pressed.state, { type: "soc", soc: 22 });
-  assert.equal(again.state.boost, false);
-  assert.equal(again.state.mode, "cycle");
-  assert.equal(again.state.phase, "engine");
-  assert.equal(again.plan, "release");
+  assert.equal(again.state.boost, true);
+  assert.equal(again.state.mode, "electric");
+  assert.equal(again.state.phase, "battery");
+  assert.equal(again.plan, "force-off");
+  assert.equal(again.state.lockUntil, null);
 });
 
 test("restorePhase keeps a cycle charge in the engine phase", () => {
@@ -403,6 +455,17 @@ test("engine frames are the two published payloads", () => {
   assert.equal(src.includes("? 16 : 22"), false);
   assert.equal(src.includes("soc >= 55"), false);
   assert.equal(src.includes("floor + 1"), true);
+  assert.equal(src.includes("soc + 2"), false);
+  assert.equal(src.includes("engineKnown"), true);
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
+  assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
+  assert.equal(app.includes("protocol.js?v=25"), true);
+  assert.equal(app.includes("engineKnown"), true);
+  const refused = app.slice(app.indexOf('job.tag === "hold" && !timedOut'), app.indexOf('job.tag === "on"'));
+  assert.equal(refused.includes("asserted = false"), false);
+  assert.equal(refused.includes('busKind = "none"'), false);
+  assert.equal(refused.includes("onHoldRefused(queue, false)"), true);
   assert.equal(src.includes("enginePlan"), false);
   assert.equal(src.includes("regen"), false);
   assert.equal(/\b2200\b/.test(src), false);
