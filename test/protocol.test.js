@@ -29,6 +29,7 @@ import {
   electricBlocked,
   quietPlan,
   releaseCommands,
+  restorePhase,
   stepDrive,
   clearedTrip,
   decodeDtcBytes,
@@ -91,11 +92,20 @@ test("electric at 44.5 with boost off trips to engine and locks 2 points up", ()
   assert.notEqual(result.plan, "force-off");
 });
 
-test("electric at 21.5 with boost on trips to engine and locks 2 points up", () => {
+test("electric at 21.5 with boost on turns boost off and charges toward 46", () => {
   const result = stepDrive(drive({ mode: "electric", boost: true, soc: 60, previousPlan: "force-off" }), { type: "soc", soc: 21.5 });
-  assert.equal(result.state.mode, "engine");
-  assert.equal(result.state.lockUntil, 23.5);
-  assert.notEqual(result.plan, "force-off");
+  assert.equal(result.state.boost, false);
+  assert.equal(result.state.mode, "cycle");
+  assert.equal(result.state.phase, "engine");
+  assert.equal(result.state.lockUntil, null);
+  assert.equal(result.plan, "release");
+  const charging = stepDrive(result.state, { type: "soc", soc: 30 });
+  assert.equal(charging.state.phase, "engine");
+  assert.equal(charging.state.mode, "cycle");
+  assert.equal(charging.plan, "none");
+  const back = stepDrive(charging.state, { type: "soc", soc: 46 });
+  assert.equal(back.state.phase, "battery");
+  assert.equal(back.plan, "force-off");
 });
 
 test("the lock blocks electric until soc reaches it", () => {
@@ -112,9 +122,10 @@ test("the lock blocks electric until soc reaches it", () => {
 
 test("boost on, soc 30, lockUntil 47, an electric press sets mode electric", () => {
   const armed = stepDrive(drive({ mode: "engine", soc: 30, lockUntil: 47 }), { type: "boost" });
-  assert.equal(armed.state.mode, "engine");
+  assert.equal(armed.state.mode, "electric");
+  assert.equal(armed.state.phase, "battery");
   assert.equal(armed.state.boost, true);
-  assert.equal(armed.plan, "none");
+  assert.equal(armed.plan, "force-off");
   assert.equal(electricBlocked(armed.state), false);
   const pressed = stepDrive(drive({ soc: 30, lockUntil: 47, boost: true }), { type: "electric" });
   assert.equal(pressed.state.mode, "electric");
@@ -194,25 +205,60 @@ test("cycle holds on the battery, releases at 45, and returns at 46", () => {
   assert.equal(result.plan, "force-off");
 });
 
-test("cycle with boost on releases at 22 and returns at 23", () => {
+test("cycle with boost on turns boost off at 22 and returns at 46", () => {
   let result = stepDrive(drive({ soc: 60, boost: true }), { type: "cycle" });
   result = stepDrive(result.state, { type: "soc", soc: 22.1 });
+  assert.equal(result.state.boost, true);
   assert.equal(result.state.phase, "battery");
   assert.equal(result.plan, "force-off");
   result = stepDrive(result.state, { type: "soc", soc: 22 });
+  assert.equal(result.state.boost, false);
   assert.equal(result.state.phase, "engine");
   assert.equal(result.state.mode, "cycle");
   assert.equal(result.state.lockUntil, null);
   assert.equal(result.plan, "release");
-  result = stepDrive(result.state, { type: "soc", soc: 22.5 });
+  result = stepDrive(result.state, { type: "soc", soc: 23 });
   assert.equal(result.state.phase, "engine");
   assert.equal(result.plan, "none");
-  result = stepDrive(result.state, { type: "soc", soc: 23 });
+  result = stepDrive(result.state, { type: "soc", soc: 46 });
   assert.equal(result.state.phase, "battery");
   assert.equal(result.plan, "force-off");
-  result = stepDrive(result.state, { type: "soc", soc: 23 });
-  assert.equal(result.state.phase, "battery");
-  assert.equal(result.plan, "force-off");
+});
+
+test("boost on while engine is showing selects electric", () => {
+  const fromEngine = stepDrive(drive({ mode: "engine", phase: "engine", soc: 30 }), { type: "boost" });
+  assert.equal(fromEngine.state.mode, "electric");
+  assert.equal(fromEngine.state.boost, true);
+  assert.equal(fromEngine.plan, "force-off");
+  const fromCycle = stepDrive(drive({ mode: "cycle", phase: "engine", soc: 40, previousPlan: "none" }), { type: "boost" });
+  assert.equal(fromCycle.state.mode, "electric");
+  assert.equal(fromCycle.state.phase, "battery");
+  assert.equal(fromCycle.state.boost, true);
+  assert.equal(fromCycle.plan, "force-off");
+  const batteryPhase = stepDrive(drive({ mode: "cycle", phase: "battery", soc: 50, boost: false, previousPlan: "force-off" }), { type: "boost" });
+  assert.equal(batteryPhase.state.mode, "cycle");
+  assert.equal(batteryPhase.state.phase, "battery");
+  assert.equal(batteryPhase.state.boost, true);
+  assert.equal(batteryPhase.plan, "none");
+});
+
+test("boost can be pressed again at 22 and the next reading turns it off", () => {
+  const pressed = stepDrive(drive({ mode: "cycle", phase: "engine", soc: 22, boost: false, previousPlan: "none" }), { type: "boost" });
+  assert.equal(pressed.state.boost, true);
+  assert.equal(pressed.state.mode, "electric");
+  assert.equal(pressed.plan, "force-off");
+  const again = stepDrive(pressed.state, { type: "soc", soc: 22 });
+  assert.equal(again.state.boost, false);
+  assert.equal(again.state.mode, "cycle");
+  assert.equal(again.state.phase, "engine");
+  assert.equal(again.plan, "release");
+});
+
+test("restorePhase keeps a cycle charge in the engine phase", () => {
+  assert.equal(restorePhase("cycle", "engine"), "engine");
+  assert.equal(restorePhase("cycle", "battery"), "battery");
+  assert.equal(restorePhase("engine", "battery"), "engine");
+  assert.equal(restorePhase("electric", "engine"), "battery");
 });
 
 test("cycle at 45.5 starts on the battery and stays there until 45", () => {
@@ -255,12 +301,11 @@ test("a stale lock does not block the cycle return at 46 or bounce it off", () =
     lockUntil: 47,
     previousPlan: "none",
   }), { type: "soc", soc: 23 });
+  assert.equal(boost.state.mode, "electric");
+  assert.equal(boost.state.boost, true);
   assert.equal(boost.state.phase, "battery");
   assert.equal(boost.plan, "force-off");
   assert.equal(boost.state.lockUntil, 47);
-  const held = stepDrive(boost.state, { type: "soc", soc: 23 });
-  assert.equal(held.state.phase, "battery");
-  assert.equal(held.plan, "force-off");
 });
 
 test("cycle with an empty charge reading holds the battery and leaves the engine phase alone", () => {

@@ -13,6 +13,7 @@ import {
   holdRefused,
   kilowatts,
   quietPlan,
+  restorePhase,
   milesPerHour,
   onHoldRefused,
   packLine,
@@ -28,7 +29,7 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-} from "./protocol.js?v=21";
+} from "./protocol.js?v=22";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -261,7 +262,7 @@ function loadDrive() {
     return {
       mode,
       boost: localStorage.getItem("voltpanel.boost") === "1",
-      phase: mode === "engine" ? "engine" : "battery",
+      phase: restorePhase(mode, localStorage.getItem("voltpanel.phase")),
       soc: null,
       lockUntil: lockNum != null && Number.isFinite(lockNum) ? lockNum : null,
       previousPlan: mode === "electric" ? "force-off" : "none",
@@ -309,6 +310,8 @@ function persistDrive() {
   try {
     localStorage.setItem("voltpanel.mode", drive.mode);
     localStorage.setItem("voltpanel.boost", drive.boost ? "1" : "0");
+    if (drive.mode === "cycle") localStorage.setItem("voltpanel.phase", drive.phase === "engine" ? "engine" : "battery");
+    else localStorage.removeItem("voltpanel.phase");
     if (drive.lockUntil == null) localStorage.removeItem("voltpanel.lockUntil");
     else localStorage.setItem("voltpanel.lockUntil", String(drive.lockUntil));
     localStorage.removeItem("voltpanel.electric");

@@ -113,12 +113,36 @@ function leaveHold(next) {
   return { state: next, plan: "none" };
 }
 
+function engineShowing(next) {
+  return next.mode === "engine" || (next.mode === "cycle" && next.phase === "engine");
+}
+
+// Boost has reached the bottom. Leave no mode on until the normal cycle can take the battery back at 46%.
+function endBoost(next) {
+  next.boost = false;
+  next.lockUntil = null;
+  next.mode = "cycle";
+  next.phase = "engine";
+  return leaveHold(next);
+}
+
+export function restorePhase(mode, saved) {
+  if (mode === "engine" || (mode === "cycle" && saved === "engine")) return "engine";
+  return "battery";
+}
+
 function stepSoc(next) {
   const soc = next.soc;
   if (!numeric(soc)) {
     const holding = next.mode === "electric" || (next.mode === "cycle" && next.phase !== "engine");
     if (holding && next.previousPlan === "force-off") return finish(next, "force-off");
     return leaveHold(next);
+  }
+  if (next.boost && soc <= 22) return endBoost(next);
+  if (next.boost && engineShowing(next)) {
+    next.mode = "electric";
+    next.phase = "battery";
+    return finish(next, "force-off");
   }
   const floor = holdFloor(next.boost);
   if (next.mode === "electric") {
@@ -161,6 +185,11 @@ export function stepDrive(state, event) {
   const kind = event && event.type;
   if (kind === "boost") {
     next.boost = !next.boost;
+    if (next.boost && engineShowing(next)) {
+      next.mode = "electric";
+      next.phase = "battery";
+      return finish(next, "force-off");
+    }
     return { state: next, plan: "none" };
   }
   if (kind === "engine") {

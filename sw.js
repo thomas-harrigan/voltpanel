@@ -1,5 +1,5 @@
-const CACHE = "voltpanel-27";
-const FILES = ["/", "/index.html", "/css/app.css?v=15", "/js/app.js?v=21", "/js/gauges.js?v=8", "/js/protocol.js?v=21", "/manifest.webmanifest", "/icon.svg", "/brand/volt.png?v=7", "/fonts/Staatliches-Regular.woff2?v=8"];
+const CACHE = "voltpanel-28";
+const FILES = ["/", "/index.html", "/css/app.css?v=15", "/js/app.js?v=22", "/js/gauges.js?v=8", "/js/protocol.js?v=22", "/manifest.webmanifest", "/icon.svg", "/brand/volt.png?v=7", "/fonts/Staatliches-Regular.woff2?v=8"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)));
