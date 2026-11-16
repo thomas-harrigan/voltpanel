@@ -357,12 +357,11 @@ export function quietPlan(row) {
   return "none";
 }
 
-// A new link can still be honoring the last charge hold. Release once, then the poll stays quiet.
+// A new link sends no module frame. Engine mode is the same silence as no mode.
+// A force-off hold releases only when stepDrive leaves that hold.
 export function attachRelease(state) {
-  const row = state || {};
-  const engine = row.mode === "engine" || (row.mode === "cycle" && row.phase === "engine");
-  if (!engine) return [];
-  return releaseCommands();
+  void state;
+  return [];
 }
 
 export function onHoldRefused(queue, asserted) {

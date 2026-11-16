@@ -256,14 +256,14 @@ test("engine mode and the cycle engine phase stay force-on", () => {
   assert.notEqual(refused.plan, "force-on");
 });
 
-test("attach releases once when engine or the cycle engine phase is already selected", () => {
+test("attach sends no module frame for any mode", () => {
   assert.deepEqual(attachRelease({ mode: "off" }), []);
   assert.deepEqual(attachRelease({ mode: "electric", phase: "battery", soc: 50 }), []);
   assert.deepEqual(attachRelease({ mode: "cycle", phase: "battery", soc: 32 }), []);
-  assert.deepEqual(attachRelease({ mode: "engine", phase: "engine", soc: 50, rpm: 4000 }), releaseCommands());
-  assert.deepEqual(attachRelease({ mode: "engine", phase: "engine", soc: null, rpm: 0 }), releaseCommands());
-  assert.deepEqual(attachRelease({ mode: "cycle", phase: "engine", soc: 24, rpm: 4000 }), releaseCommands());
-  assert.deepEqual(attachRelease({ mode: "cycle", phase: "engine", soc: 31.9 }), releaseCommands());
+  assert.deepEqual(attachRelease({ mode: "engine", phase: "engine", soc: 50, rpm: 4000 }), []);
+  assert.deepEqual(attachRelease({ mode: "engine", phase: "engine", soc: null, rpm: 0 }), []);
+  assert.deepEqual(attachRelease({ mode: "cycle", phase: "engine", soc: 24, rpm: 4000 }), []);
+  assert.deepEqual(attachRelease({ mode: "cycle", phase: "engine", soc: 31.9 }), []);
   assert.equal(attachRelease({ mode: "engine", soc: 50 }).includes(FORCE_ON), false);
   assert.equal(quietPlan({ mode: "engine", phase: "engine", soc: 50, rpm: 4000 }), "none");
   assert.equal(quietPlan({ mode: "cycle", phase: "engine", soc: 24, rpm: 2400 }), "none");
