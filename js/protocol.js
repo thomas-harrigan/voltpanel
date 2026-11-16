@@ -202,7 +202,7 @@ export function stepDrive(state, event) {
     next.mode = "cycle";
     if (underFloor(next.soc, next.boost, next.lockUntil)) {
       next.phase = "engine";
-      return finish(next, "release");
+      return leaveHold(next);
     }
     next.phase = "battery";
     return finish(next, "force-off");

@@ -174,6 +174,19 @@ test("leaving cycle keeps the phase it was in", () => {
   assert.notEqual(running.plan, "force-off");
 });
 
+test("cycle under the floor does not release unless a hold was on", () => {
+  const locked = stepDrive(drive({ mode: "off", soc: 25, lockUntil: 26, previousPlan: "none" }), { type: "cycle" });
+  assert.equal(locked.state.mode, "cycle");
+  assert.equal(locked.state.phase, "engine");
+  assert.equal(locked.plan, "none");
+  const fromEngine = stepDrive(drive({ mode: "engine", soc: 20, previousPlan: "none" }), { type: "cycle" });
+  assert.equal(fromEngine.plan, "none");
+  const held = stepDrive(drive({ mode: "electric", phase: "battery", soc: 20, previousPlan: "force-off" }), { type: "cycle" });
+  assert.equal(held.state.mode, "cycle");
+  assert.equal(held.state.phase, "engine");
+  assert.equal(held.plan, "release");
+});
+
 test("cycle during the lock does not enter the battery phase", () => {
   const pressed = stepDrive(drive({ soc: 25, lockUntil: 26 }), { type: "cycle" });
   assert.equal(pressed.state.mode, "cycle");
