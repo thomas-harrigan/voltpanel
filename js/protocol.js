@@ -439,6 +439,15 @@ export function milesPerHour(speedKmh) {
   return speedKmh * 0.621371;
 }
 
+export function engineKnown(row) {
+  const item = row || {};
+  if (item.proved === true) return true;
+  const rpmOk = typeof item.rpm === "number" && Number.isFinite(item.rpm);
+  if (rpmOk && item.rpm >= 400) return true;
+  if (typeof item.speedKmh === "number" && Number.isFinite(item.speedKmh) && item.speedKmh > 0 && rpmOk) return true;
+  return false;
+}
+
 export function tripRecord(trip) {
   const row = trip && typeof trip === "object" ? trip : {};
   const miles = Number(row.miles);

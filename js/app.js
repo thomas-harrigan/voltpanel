@@ -29,7 +29,8 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-} from "./protocol.js?v=22";
+  engineKnown,
+} from "./protocol.js?v=24";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -74,6 +75,10 @@ let lastHold = 0;
 let asserted = false;
 let busKind = "none";
 let forceOnRejected = false;
+let proved = false;
+let proofRpm = null;
+let proofSpeed = null;
+let rpmMisses = 0;
 let pollTimer = 0;
 let holdPoll = false;
 let trip = clearedTrip();
@@ -345,6 +350,7 @@ function finalPlan(fallback) {
 
 function considerHold(forceNow) {
   if (!linked()) return;
+  if (!engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) return;
   const now = Date.now();
   if (!forceNow && now - lastHold < 2000) return;
   dropBus("on");
@@ -516,8 +522,16 @@ function scheduleRetry(next) {
   }, plan.wait);
 }
 
+function clearProof() {
+  proved = false;
+  proofRpm = null;
+  proofSpeed = null;
+  rpmMisses = 0;
+}
+
 function onLinkDrop(next) {
   if (device !== next) return;
+  clearProof();
   linkGen += 1;
   clearInterval(pollTimer);
   clearQueue();
@@ -732,9 +746,26 @@ function onReply(job, text, timedOut) {
     paintLive();
     return;
   }
+  if (job.tag === "rpm" && timedOut && linked()) {
+    rpmMisses += 1;
+    if (rpmMisses >= 3) {
+      const held = asserted || busKind !== "none";
+      clearProof();
+      if (held) enact("release");
+    }
+  }
   const parsed = timedOut ? {} : parseReply(text);
   if (parsed.rpm != null) state.rpm = parsed.rpm;
+  if (job.tag === "rpm" && !timedOut && typeof parsed.rpm === "number" && Number.isFinite(parsed.rpm)) {
+    rpmMisses = 0;
+    proofRpm = parsed.rpm;
+    if (engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) proved = true;
+  }
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
+  if (job.tag === "speed" && !timedOut && typeof parsed.speedKmh === "number" && Number.isFinite(parsed.speedKmh)) {
+    proofSpeed = parsed.speedKmh;
+    if (typeof proofRpm === "number" && Number.isFinite(proofRpm) && engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) proved = true;
+  }
   if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) noteTripSample();
   if (job.tag === "fuel") {
     const next = noteVoltFuel({
@@ -875,6 +906,7 @@ function disconnect() {
   asserted = false;
   busKind = "none";
   forceOnRejected = false;
+  clearProof();
   promptSeen = false;
   noReply = false;
   buffer = "";

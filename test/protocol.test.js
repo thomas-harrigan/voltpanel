@@ -15,6 +15,7 @@ import {
   decodeSoc,
   decodeVoltage,
   economy,
+  engineKnown,
   noteVoltFuel,
   promptAfterTimeout,
   takePrompt,
@@ -621,4 +622,14 @@ test("dtc bytes match the gauge decoder", () => {
   assert.deepEqual(parseDtcResponse("43 01 03 01"), ["P0301"]);
   assert.deepEqual(parseDtcResponse("43 00"), []);
   assert.equal(parseDtcResponse("NO DATA"), null);
+});
+
+test("engine known is spin, motion with a finite rpm, or an earlier proof", () => {
+  assert.equal(engineKnown({}), false);
+  assert.equal(engineKnown({ rpm: 0 }), false);
+  assert.equal(engineKnown({ rpm: 0, speedKmh: 0 }), false);
+  assert.equal(engineKnown({ rpm: 400 }), true);
+  assert.equal(engineKnown({ rpm: 0, speedKmh: 1 }), true);
+  assert.equal(engineKnown({ proved: true }), true);
+  assert.equal(holdCommands().commands.includes(FORCE_ON), false);
 });
