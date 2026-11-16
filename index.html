@@ -9,9 +9,9 @@
   <title>Volt</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/css/app.css?v=11">
-  <link rel="modulepreload" href="/js/protocol.js?v=9">
-  <link rel="modulepreload" href="/js/gauges.js?v=6">
+  <link rel="stylesheet" href="/css/app.css?v=14">
+  <link rel="modulepreload" href="/js/protocol.js?v=15">
+  <link rel="modulepreload" href="/js/gauges.js?v=7">
   <link rel="preload" href="/brand/volt.png?v=7" as="image">
   <link rel="preload" href="/fonts/Staatliches-Regular.woff2?v=8" as="font" type="font/woff2" crossorigin>
 </head>
@@ -26,7 +26,18 @@
     </button>
   </header>
   <main class="stage">
+    <div class="cluster">
     <div class="modes">
+      <button class="mode" type="button" id="cycle" aria-pressed="false" aria-label="Cycle Mode">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">
+              <span class="line">Cycle</span>
+              <span class="line">Mode</span>
+            </span>
+          </span>
+        </span>
+      </button>
       <button class="mode" type="button" id="electric" aria-pressed="false" aria-label="Electric Mode">
         <span class="bezel">
           <span class="well">
@@ -42,16 +53,6 @@
           <span class="well">
             <span class="face">
               <span class="line">Engine</span>
-              <span class="line">Mode</span>
-            </span>
-          </span>
-        </span>
-      </button>
-      <button class="mode" type="button" id="cycle" aria-pressed="false" aria-label="Cycle Mode">
-        <span class="bezel">
-          <span class="well">
-            <span class="face">
-              <span class="line">Cycle</span>
               <span class="line">Mode</span>
             </span>
           </span>
@@ -111,6 +112,25 @@
         <div class="dial">
           <svg viewBox="0 0 100 100" aria-hidden="true">
             <defs>
+              <linearGradient id="grad-electric" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-electric" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-electric" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-electric"></path>
+            <path class="fill" id="fill-electric" stroke="url(#grad-electric)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-electric">0.0</div>
+            <div class="unit">mi</div>
+          </div>
+        </div>
+        <div class="label label-stack"><span class="line">Electric</span><span class="line">Miles</span></div>
+      </article>
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
               <linearGradient id="grad-rpm" x1="0" y1="0" x2="1" y2="0">
                 <stop id="stop0-rpm" offset="0" stop-color="#3dbe6e"/>
                 <stop id="stop1-rpm" offset="1" stop-color="#3dbe6e"/>
@@ -145,7 +165,46 @@
         </div>
         <div class="label" id="label-economy">MPG</div>
       </article>
+      <article class="gauge">
+        <div class="dial">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-trip" x1="0" y1="0" x2="1" y2="0">
+                <stop id="stop0-trip" offset="0" stop-color="#3dbe6e"/>
+                <stop id="stop1-trip" offset="1" stop-color="#3dbe6e"/>
+              </linearGradient>
+            </defs>
+            <path class="track" id="track-trip"></path>
+            <path class="fill" id="fill-trip" stroke="url(#grad-trip)" pathLength="100"></path>
+          </svg>
+          <div class="readout">
+            <div class="num" id="num-trip">0.0</div>
+            <div class="unit">mi</div>
+          </div>
+        </div>
+        <div class="label">Trip</div>
+      </article>
     </section>
+    <div class="bar">
+      <button class="metal" type="button" id="diag" aria-label="Diag">
+        <span class="bezel">
+          <span class="well">
+            <span class="face">DIAG</span>
+          </span>
+        </span>
+      </button>
+      <button class="metal" type="button" id="trip-reset" aria-label="Reset Trip">
+        <span class="bezel">
+          <span class="well">
+            <span class="face"><span class="line">RESET</span><span class="line">TRIP</span></span>
+          </span>
+        </span>
+      </button>
+      <button class="metal" type="button" id="connect" aria-pressed="false" aria-label="Connect">
+        <span class="bezel"><span class="well"><span class="face">CONNECT</span></span></span>
+      </button>
+    </div>
+    </div>
   </main>
   <div class="sheet" id="sheet" hidden>
     <button class="scrim" type="button" id="scrim" aria-label="Close"></button>
@@ -153,11 +212,19 @@
       <h2 id="settings-title">Settings</h2>
       <div class="row"><span>Adapter</span><span id="adapter">Not Connected</span></div>
       <div class="actions">
-        <button type="button" id="connect">Connect</button>
         <button type="button" id="close-settings">Close</button>
       </div>
     </div>
   </div>
-  <script type="module" src="/js/app.js?v=9"></script>
+  <section class="codes" id="codes" hidden>
+    <div class="codes-top">
+      <button class="codes-back" type="button" id="codes-back">Back</button>
+    </div>
+    <h2>Codes</h2>
+    <p class="codes-status" id="codes-status"></p>
+    <div class="codes-list" id="codes-list"></div>
+    <button type="button" id="clear-codes">Clear Codes</button>
+  </section>
+  <script type="module" src="/js/app.js?v=16"></script>
 </body>
 </html>

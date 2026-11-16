@@ -1,5 +1,9 @@
 # Volt
 
-Phone panel for a 2012 Chevy Volt. The page runs in the browser and talks to the car only over Bluetooth on that phone. It does not call a server.
+Phone instrument for a 2012 Volt and a Veepeak OBDCheck BLE adapter.
 
-privacy: pass
+```
+node --test
+```
+
+Static files. Docker listens on port 80 in the container, published as 8877.

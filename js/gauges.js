@@ -5,8 +5,10 @@ const RED = "#e23b2f";
 export const GAUGES = {
   battery: { min: 0, max: 100, red: "low", unit: "%", label: "Battery" },
   output: { min: -120, max: 120, unit: "kW", label: "Output" },
+  electric: { min: 0, max: 500, unit: "mi", label: "Electric Miles", solid: "#3dbe6e", decimals: 1 },
   rpm: { min: 0, max: 6000, redFrom: 4800, unit: "rpm", label: "RPM" },
   economy: { min: 0, max: 40, red: "low", unit: "mpg", label: "MPG" },
+  trip: { min: 0, max: 500, unit: "mi", label: "Trip", solid: "#3dbe6e", decimals: 1 },
 };
 
 const RAMP = [
@@ -30,6 +32,20 @@ export function formatReading(value) {
   if (value == null || !Number.isFinite(value)) return "—";
   const n = Math.round(value);
   return Object.is(n, -0) ? "0" : String(n);
+}
+
+export function formatMiles(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const n = Math.round(value * 10) / 10;
+  if (Object.is(n, -0)) return "0.0";
+  return n.toFixed(1);
+}
+
+export function actionCenters(dial, gap) {
+  return {
+    diag: dial + gap / 2,
+    reset: 2 * dial + 1.5 * gap,
+  };
 }
 
 export function dash(value, min, max) {

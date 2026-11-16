@@ -1,22 +1,35 @@
 import {
   BLE_LAYOUTS,
   INIT,
+  TRIP_HOLD_MS,
   adapterLine,
+  connectFace,
+  clearAccepted,
+  clearedTrip,
   economy,
+  attachRelease,
   electricBlocked,
   holdCommands,
   holdRefused,
   kilowatts,
+  quietPlan,
+  milesPerHour,
   onHoldRefused,
   packLine,
+  parseDtcResponse,
   parseReply,
   reconnectPlan,
   releaseCommands,
   replySilent,
   stepDrive,
+  noteVoltFuel,
+  promptAfterTimeout,
+  takePrompt,
+  tripRecord,
+  tripStep,
   writePlan,
-} from "./protocol.js?v=9";
-import { GAUGES, SHOTS, arcPath, dash, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=6";
+} from "./protocol.js?v=15";
+import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=7";
 
 const $ = (id) => document.getElementById(id);
 const adapterEl = $("adapter");
@@ -50,13 +63,29 @@ let device = null;
 let writeChar = null;
 let notifyChar = null;
 let buffer = "";
+let discardNext = false;
+let askFuel = true;
 let waiters = [];
 let queue = [];
 let busy = false;
 let header = "";
 let lastHold = 0;
 let asserted = false;
+let busKind = "none";
+let forceOnRejected = false;
 let pollTimer = 0;
+let holdPoll = false;
+let trip = clearedTrip();
+let lastTripAt = 0;
+let lastTripMph = null;
+let lastTripRpm = null;
+let codesGen = 0;
+let codesChain = Promise.resolve();
+let clearArmed = false;
+let clearing = false;
+let holding = false;
+let holdTimer = 0;
+let holdPointer = null;
 const poll = [
   ["7DF", "01 0C", "rpm"],
   ["7DF", "01 0D", "speed"],
@@ -140,16 +169,17 @@ function bindDepression(btn) {
 
 function paintGauge(key, value) {
   const spec = GAUGES[key];
-  const next = dash(value, spec.min, spec.max);
+  const shown = spec.decimals === 1 && Number.isFinite(value) ? Math.round(value * 10) / 10 : value;
+  const next = dash(shown, spec.min, spec.max);
   const fill = $("fill-" + key);
   fill.style.strokeLinecap = next.startsWith("0.00") ? "butt" : "round";
   if (fill.getAttribute("stroke-dasharray") !== next) fill.setAttribute("stroke-dasharray", next);
-  const [a, b] = key === "rpm" ? rpmColors(value) : zoneColors(value, spec);
+  const [a, b] = spec.solid ? [spec.solid, spec.solid] : (key === "rpm" ? rpmColors(value) : zoneColors(value, spec));
   const stop0 = $("stop0-" + key);
   const stop1 = $("stop1-" + key);
   if (stop0 && stop0.getAttribute("stop-color") !== a) stop0.setAttribute("stop-color", a);
   if (stop1 && stop1.getAttribute("stop-color") !== b) stop1.setAttribute("stop-color", b);
-  setText($("num-" + key), formatReading(value));
+  setText($("num-" + key), spec.decimals === 1 ? formatMiles(value) : formatReading(value));
 }
 
 function paintOutput(kw) {
@@ -172,9 +202,15 @@ function paintEconomy(result) {
   paintGauge("economy", result.value);
 }
 
+function paintMiles() {
+  paintGauge("electric", trip.electricMiles);
+  paintGauge("trip", trip.miles);
+}
+
 function paintLive() {
   paintGauge("battery", state.soc);
   paintOutput(state.kw);
+  paintMiles();
   paintGauge("rpm", state.rpm);
   paintEconomy(economy(state));
   paintModes();
@@ -199,6 +235,7 @@ function applyShot(shot) {
   setText($("label-economy"), "MPG");
   setText($("unit-economy"), "mpg");
   paintGauge("economy", shot.mpg);
+  paintMiles();
   paintModes();
 }
 
@@ -233,6 +270,39 @@ function loadDrive() {
   }
 }
 
+function loadTrip() {
+  try {
+    const raw = localStorage.getItem("voltpanel.trip");
+    trip = tripRecord(raw ? JSON.parse(raw) : null);
+  } catch {
+    trip = clearedTrip();
+  }
+}
+
+function saveTrip() {
+  if (shotMode) return;
+  try {
+    localStorage.setItem("voltpanel.trip", JSON.stringify(tripRecord(trip)));
+  } catch {
+    /* private mode */
+  }
+}
+
+function noteTripSample() {
+  if (shotMode) return;
+  const now = Date.now();
+  const mph = milesPerHour(state.speedKmh);
+  if (lastTripAt) {
+    const next = tripStep(trip, { mph: lastTripMph, rpm: lastTripRpm, dt: (now - lastTripAt) / 1000 });
+    const changed = next.miles !== trip.miles || next.electricMiles !== trip.electricMiles;
+    trip = next;
+    if (changed) saveTrip();
+  }
+  lastTripAt = now;
+  lastTripMph = mph;
+  lastTripRpm = Number.isFinite(state.rpm) ? state.rpm : null;
+}
+
 function persistDrive() {
   if (shotMode) return;
   try {
@@ -250,31 +320,64 @@ function linked() {
   return !shotMode && !!(writeChar && promptSeen);
 }
 
+function dropBus(tag) {
+  if (!queue.some((job) => job.tag === tag)) return;
+  queue = queue.filter((job) => job.tag !== tag);
+}
+
+function finalPlan(fallback) {
+  const quiet = quietPlan({
+    mode: drive.mode,
+    phase: drive.phase,
+    boost: drive.boost,
+    soc: drive.soc,
+    lockUntil: drive.lockUntil,
+    forceOnOk: !forceOnRejected,
+  });
+  if (quiet !== "none") return quiet;
+  if (busKind === "on" && fallback !== "force-off") return "release";
+  return fallback;
+}
+
 function considerHold(forceNow) {
-  if (drive.previousPlan !== "force-off" || !linked()) return;
+  if (!linked()) return;
   const now = Date.now();
   if (!forceNow && now - lastHold < 2000) return;
+  dropBus("on");
+  dropBus("release");
+  busKind = "off";
   if (queue.some((job) => job.tag === "hold")) return;
   lastHold = now;
   asserted = true;
   for (const cmd of holdCommands().commands) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "hold");
 }
 
+function enact(plan) {
+  if (plan === "force-on") return;
+  if (plan === "force-off") {
+    drive.previousPlan = "force-off";
+    considerHold(busKind !== "off");
+    return;
+  }
+  if (plan === "release") {
+    const was = busKind !== "none" || asserted || drive.previousPlan === "force-off";
+    asserted = false;
+    busKind = "none";
+    drive.previousPlan = "none";
+    dropBus("on");
+    dropBus("hold");
+    if (linked() && was) {
+      for (const cmd of releaseCommands()) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "release");
+    }
+  }
+}
+
 function applyDrive(event) {
-  const before = drive.previousPlan;
-  const wasAsserted = asserted;
   drive.soc = state.soc;
   const result = stepDrive(drive, event);
   drive = result.state;
   persistDrive();
-  if (linked() && result.plan === "force-off") {
-    considerHold(before !== "force-off");
-  } else if (result.plan === "release") {
-    asserted = false;
-    if (linked() && (before === "force-off" || wasAsserted)) {
-      for (const cmd of releaseCommands()) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "release");
-    }
-  }
+  enact(finalPlan(result.plan));
   paintModes();
 }
 
@@ -289,13 +392,21 @@ function bluetoothMissing() {
   return typeof navigator === "undefined" || !navigator.bluetooth;
 }
 
+function paintConnect(row) {
+  const face = connectFace(row);
+  const node = connectBtn.querySelector(".face");
+  if (node && node.textContent !== face.label) node.textContent = face.label;
+  connectBtn.classList.toggle("on", face.lit);
+  connectBtn.setAttribute("aria-pressed", face.lit ? "true" : "false");
+  connectBtn.setAttribute("aria-label", face.lit ? "Connected" : "Connect");
+}
+
 function paintAdapter() {
   if (bluetoothMissing()) {
     setText(adapterEl, "No Bluetooth");
-    connectBtn.hidden = true;
+    paintConnect({ connected: false });
     return;
   }
-  connectBtn.hidden = false;
   const connected = !!(device && device.gatt && device.gatt.connected);
   const text = adapterLine({
     hasBluetooth: true,
@@ -307,7 +418,12 @@ function paintAdapter() {
     name: device ? (device.name || "Adapter") : "",
   });
   setText(adapterEl, text);
-  setText(connectBtn, (connected || reconnecting) ? "Disconnect" : "Connect");
+  paintConnect({
+    connected,
+    reconnecting,
+    noReply: connected && noReply,
+    name: device ? (device.name || "Adapter") : "",
+  });
 }
 
 function sessionUp() {
@@ -406,9 +522,11 @@ function onLinkDrop(next) {
   writeChar = null;
   notifyChar = null;
   asserted = false;
+  busKind = "none";
   promptSeen = false;
   noReply = false;
   buffer = "";
+  discardNext = false;
   dropWaiters();
   if (userGone) {
     reconnecting = false;
@@ -448,12 +566,14 @@ async function pump() {
   busy = true;
   const job = queue.shift();
   let text = "";
+  let timedOut = false;
   try {
     text = await transact(job.cmd, job.timeout);
   } catch {
     text = "";
+    timedOut = true;
   }
-  onReply(job, text);
+  onReply(job, text, timedOut);
   busy = false;
   setTimeout(pump, 200);
 }
@@ -470,7 +590,33 @@ function dropWaiters() {
   for (const waiter of pending) waiter("");
 }
 
-function transact(cmd, timeout) {
+function drainBuffer() {
+  let step = takePrompt(discardNext, buffer);
+  while (step.ready) {
+    buffer = step.rest;
+    discardNext = step.discardNext;
+    if (step.text) {
+      const waiter = waiters.shift();
+      if (waiter) waiter(step.text);
+      return;
+    }
+    step = takePrompt(discardNext, buffer);
+  }
+}
+
+async function settlePrompt() {
+  if (!discardNext) return;
+  const started = Date.now();
+  while (discardNext && Date.now() - started < 150) {
+    drainBuffer();
+    if (!discardNext) return;
+    await wait(20);
+  }
+  drainBuffer();
+}
+
+async function transact(cmd, timeout) {
+  await settlePrompt();
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (text, err) => {
@@ -481,7 +627,10 @@ function transact(cmd, timeout) {
       if (err) reject(err);
       else resolve(text);
     };
-    const timer = setTimeout(() => finish("", new Error("timeout")), timeout);
+    const timer = setTimeout(() => {
+      discardNext = promptAfterTimeout(true);
+      finish("", new Error("timeout"));
+    }, timeout);
     waiters.push(finish);
     writeChunks(cmd).catch(() => finish(""));
   });
@@ -500,7 +649,7 @@ function wait(ms) {
 }
 
 async function probePrompt() {
-  buffer = "";
+  if (!discardNext) buffer = "";
   try {
     const text = await transact("ATZ", 2500);
     return typeof text === "string" && text.includes(">");
@@ -516,6 +665,8 @@ async function openSession() {
   writeMethods = writePlan(writeChar.properties || {});
   writeMethodIndex = 0;
   buffer = "";
+  discardNext = false;
+  askFuel = true;
   header = "";
   clearInterval(pollTimer);
   clearQueue();
@@ -557,36 +708,51 @@ async function openSession() {
 function onNotify(event) {
   const value = new TextDecoder().decode(event.target.value || new DataView(new ArrayBuffer(0)));
   buffer += value;
-  if (!buffer.includes(">")) return;
-  const text = buffer;
-  buffer = "";
-  const waiter = waiters.shift();
-  if (waiter) waiter(text);
+  drainBuffer();
 }
 
-function onReply(job, text) {
+function onReply(job, text, timedOut) {
   if (job.cmd === "ATZ") header = "";
-  if (job.tag === "hold" && holdRefused(text)) {
+  if (job.tag === "hold" && !timedOut && holdRefused(text)) {
     queue = onHoldRefused(queue, false).queue;
     asserted = false;
+    busKind = "none";
     applyDrive({ type: "refuse" });
     paintLive();
     return;
   }
-  const parsed = parseReply(text);
+  if (job.tag === "on" && !timedOut && holdRefused(text)) {
+    forceOnRejected = true;
+    queue = queue.filter((item) => item.tag !== "on");
+    enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "release"));
+    paintLive();
+    return;
+  }
+  const parsed = timedOut ? {} : parseReply(text);
   if (parsed.rpm != null) state.rpm = parsed.rpm;
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
-  if (parsed.fuelLph != null) {
+  if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) noteTripSample();
+  if (job.tag === "fuel") {
+    const next = noteVoltFuel({
+      fuelLph: state.fuelLph,
+      fuelKnown: state.fuelKnown,
+      mafGs: state.mafGs,
+      mafKnown: state.mafKnown,
+      askFuel,
+    }, text, !!timedOut);
+    state.fuelLph = next.fuelLph == null ? null : next.fuelLph;
+    state.fuelKnown = !!next.fuelKnown;
+    state.mafGs = next.mafGs;
+    state.mafKnown = !!next.mafKnown;
+    askFuel = next.askFuel !== false;
+  } else if (parsed.fuelLph != null) {
     state.fuelLph = parsed.fuelLph;
     state.fuelKnown = true;
-  } else if (job.tag === "fuel" && replySilent(text)) {
-    state.fuelLph = null;
-    state.fuelKnown = false;
   }
   if (parsed.mafGs != null) {
     state.mafGs = parsed.mafGs;
     state.mafKnown = true;
-  } else if (job.tag === "maf" && replySilent(text)) {
+  } else if (job.tag === "maf" && !timedOut && replySilent(text)) {
     state.mafGs = null;
     state.mafKnown = false;
   }
@@ -597,8 +763,8 @@ function onReply(job, text) {
   if (parsed.soc != null) {
     state.soc = parsed.soc;
     applyDrive({ type: "soc", soc: parsed.soc });
-  } else if (drive.previousPlan === "force-off") {
-    considerHold(false);
+  } else {
+    enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "none"));
   }
   paintLive();
 }
@@ -606,10 +772,14 @@ function onReply(job, text) {
 function startPoll() {
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (!writeChar || queue.length > 4) return;
-    const [head, cmd, tag] = poll[pollIndex % poll.length];
-    pollIndex += 1;
-    enqueuePid(head, cmd, tag);
+    if (holdPoll || !writeChar || queue.length > 4) return;
+    for (let n = 0; n < poll.length; n += 1) {
+      const [head, cmd, tag] = poll[pollIndex % poll.length];
+      pollIndex += 1;
+      if (tag === "fuel" && !askFuel) continue;
+      enqueuePid(head, cmd, tag);
+      return;
+    }
   }, 200);
 }
 
@@ -651,7 +821,10 @@ async function attach(next) {
   paintAdapter();
   for (const cmd of INIT) enqueue(cmd, "init");
   startPoll();
-  if (drive.previousPlan === "force-off") considerHold(true);
+  enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "none"));
+  if (!queue.some((job) => job.tag === "release")) {
+    for (const cmd of attachRelease(drive)) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "release");
+  }
 }
 
 function bindGatt(next) {
@@ -696,12 +869,219 @@ function disconnect() {
   notifyChar = null;
   device = null;
   asserted = false;
+  busKind = "none";
+  forceOnRejected = false;
   promptSeen = false;
   noReply = false;
   buffer = "";
+  discardNext = false;
   dropWaiters();
   releaseWake();
   paintAdapter();
+}
+
+function scheduleCodes(mine, job) {
+  holdPoll = true;
+  codesChain = codesChain.then(async () => {
+    if (mine !== codesGen) return;
+    holdPoll = true;
+    try {
+      await job();
+    } finally {
+      if (mine === codesGen) holdPoll = false;
+    }
+  }).catch(() => {
+    if (mine === codesGen) holdPoll = false;
+  });
+}
+
+async function ask(cmd, timeout) {
+  try {
+    return await transact(cmd, timeout);
+  } catch {
+    return "";
+  }
+}
+
+async function useHeader(head) {
+  if (header === head) return true;
+  const text = await ask("ATSH " + head, 800);
+  if (!String(text).includes(">")) return false;
+  header = head;
+  return true;
+}
+
+async function whenIdle() {
+  const start = Date.now();
+  while ((busy || queue.length || probing) && Date.now() - start < 8000) {
+    await wait(40);
+  }
+}
+
+async function askCodes(mine) {
+  const storedText = await ask("03", 2200);
+  if (mine !== codesGen) return null;
+  const pendingText = await ask("07", 2200);
+  if (mine !== codesGen) return null;
+  const permanentText = await ask("0A", 2200);
+  if (mine !== codesGen) return null;
+  return {
+    stored: parseDtcResponse(storedText),
+    pending: parseDtcResponse(pendingText),
+    permanent: parseDtcResponse(permanentText),
+  };
+}
+
+function paintCodes(result, refused) {
+  const list = $("codes-list");
+  list.replaceChildren();
+  const stored = result && result.stored;
+  const pending = result && result.pending;
+  const permanent = result && result.permanent;
+  const answered = !!result && (stored != null || pending != null || permanent != null);
+  if (!answered) {
+    setText($("codes-status"), refused ? "Not Cleared" : "No Answer");
+    return;
+  }
+  const groups = [
+    ["Stored", stored],
+    ["Pending", pending],
+    ["Permanent", permanent],
+  ];
+  let count = 0;
+  for (const [title, codes] of groups) {
+    if (!codes || !codes.length) continue;
+    count += codes.length;
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    list.append(heading);
+    for (const code of codes) {
+      const row = document.createElement("p");
+      row.textContent = code;
+      list.append(row);
+    }
+  }
+  if (refused) setText($("codes-status"), "Not Cleared");
+  else setText($("codes-status"), count ? "" : "No Codes");
+}
+
+async function readInto(mine, refused) {
+  await whenIdle();
+  if (mine !== codesGen) return;
+  if (!linked()) {
+    paintCodes(null, refused);
+    return;
+  }
+  const ready = await useHeader("7DF");
+  if (mine !== codesGen) return;
+  if (!ready) {
+    paintCodes(null, refused);
+    return;
+  }
+  const result = await askCodes(mine);
+  if (mine !== codesGen || !result) return;
+  paintCodes(result, refused);
+}
+
+async function clearInto(mine) {
+  await whenIdle();
+  if (mine !== codesGen) return;
+  if (!linked()) {
+    paintCodes(null, true);
+    return;
+  }
+  const ready = await useHeader("7DF");
+  if (mine !== codesGen) return;
+  if (!ready) {
+    paintCodes(null, true);
+    return;
+  }
+  const text = await ask("04", 2200);
+  if (mine !== codesGen) return;
+  await readInto(mine, !clearAccepted(text));
+}
+
+function openCodes() {
+  clearArmed = false;
+  clearing = false;
+  $("clear-codes").classList.remove("armed");
+  $("codes-list").replaceChildren();
+  setText($("codes-status"), "");
+  $("codes").hidden = false;
+  const mine = ++codesGen;
+  if (!linked()) {
+    setText($("codes-status"), "No Answer");
+    return;
+  }
+  scheduleCodes(mine, () => readInto(mine, false));
+}
+
+function closeCodes() {
+  codesGen += 1;
+  clearArmed = false;
+  clearing = false;
+  $("clear-codes").classList.remove("armed");
+  holdPoll = false;
+  $("codes").hidden = true;
+  paintLive();
+}
+
+function onClearCodes() {
+  if (!clearArmed) {
+    clearArmed = true;
+    $("clear-codes").classList.add("armed");
+    return;
+  }
+  if (clearing) return;
+  clearArmed = false;
+  $("clear-codes").classList.remove("armed");
+  clearing = true;
+  const mine = ++codesGen;
+  scheduleCodes(mine, async () => {
+    try {
+      await clearInto(mine);
+    } finally {
+      if (mine === codesGen) clearing = false;
+    }
+  });
+}
+
+function resetTrip() {
+  trip = clearedTrip();
+  lastTripAt = Date.now();
+  saveTrip();
+  paintMiles();
+}
+
+function bindReset() {
+  const btn = $("trip-reset");
+  const cancel = (event) => {
+    if (!holding) return;
+    if (event && event.pointerId != null && holdPointer != null && event.pointerId !== holdPointer) return;
+    holding = false;
+    clearTimeout(holdTimer);
+    btn.classList.remove("holding");
+  };
+  btn.addEventListener("pointerdown", (event) => {
+    if (holding) return;
+    if (event.button != null && event.button !== 0) return;
+    holding = true;
+    holdPointer = event.pointerId;
+    try { btn.setPointerCapture(event.pointerId); } catch { /* pointer already gone */ }
+    btn.classList.add("holding");
+    holdTimer = setTimeout(() => {
+      if (!holding) return;
+      holding = false;
+      btn.classList.remove("holding");
+      resetTrip();
+    }, TRIP_HOLD_MS);
+    event.preventDefault();
+  });
+  btn.addEventListener("pointerup", cancel);
+  btn.addEventListener("pointercancel", cancel);
+  window.addEventListener("pointerup", cancel);
+  window.addEventListener("pointercancel", cancel);
+  btn.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
 function lockScale() {
@@ -716,6 +1096,7 @@ function lockScale() {
 
 function boot() {
   drive = loadDrive();
+  loadTrip();
   paintLive();
   paintAdapter();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -727,9 +1108,15 @@ function boot() {
   $("cycle").addEventListener("click", () => press("cycle"));
   $("boost").addEventListener("click", () => press("boost"));
   for (const key of ["electric", "engine", "cycle", "boost"]) bindDepression($(key));
+  $("diag").addEventListener("click", openCodes);
+  $("diag").addEventListener("contextmenu", (event) => event.preventDefault());
+  bindDepression($("diag"));
+  $("codes-back").addEventListener("click", closeCodes);
+  $("clear-codes").addEventListener("click", onClearCodes);
+  bindReset();
   connectBtn.addEventListener("click", () => {
     if ((device && device.gatt && device.gatt.connected) || reconnecting) disconnect();
-    else {
+    else if (!bluetoothMissing()) {
       userGone = false;
       statusError = "";
       retryCount = 0;
@@ -745,6 +1132,8 @@ function boot() {
     if (document.visibilityState !== "visible" || !sessionUp()) return;
     holdWake();
   });
+  window.addEventListener("pagehide", saveTrip);
+  document.addEventListener("freeze", saveTrip);
   if (navigator.bluetooth && typeof navigator.bluetooth.addEventListener === "function") {
     navigator.bluetooth.addEventListener("availabilitychanged", () => {
       readRadio().then((value) => {

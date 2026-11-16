@@ -3,6 +3,7 @@
 
 export const TESTER = "3E";
 export const FORCE_OFF = "AE 31 05 00 00 00 00";
+export const FORCE_ON = "AE 31 06 00 00 00 00";
 export const RELEASE = "AE 00 00 00 00 00 00";
 
 export const INIT = ["ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP6"];
@@ -275,11 +276,13 @@ export function economy(state) {
   if (!numeric(row.speedKmh)) return { label: "MPG", value: null };
   const mph = row.speedKmh * 0.621371;
   if (mph < 1) return { label: "MPG", value: 0 };
-  const fuelKnown = row.fuelKnown !== false && numeric(row.fuelLph);
-  if (fuelKnown) {
-    if (row.fuelLph >= 0.05) return { label: "MPG", value: mph / (row.fuelLph * 0.264172) };
-    return { label: "MPG", value: 40 };
+  const fuelUsable = row.fuelKnown !== false && numeric(row.fuelLph);
+  if (fuelUsable && row.fuelLph >= 0.05) {
+    return { label: "MPG", value: mph / (row.fuelLph * 0.264172) };
   }
+  if (fuelUsable) return { label: "MPG", value: 40 };
+  const rpmKnown = numeric(row.rpm);
+  if (!rpmKnown || row.rpm < 400) return { label: "MPG", value: 40 };
   const mafKnown = row.mafKnown !== false && numeric(row.mafGs);
   if (mafKnown) {
     if (row.mafGs >= 0.3) {
@@ -291,6 +294,44 @@ export function economy(state) {
   return { label: "MPG", value: null };
 }
 
+export function noteVoltFuel(state, text, timedOut) {
+  const prior = state || {};
+  const next = { ...prior };
+  next.mafKnown = prior.mafKnown;
+  next.mafGs = prior.mafGs;
+  if (!timedOut) {
+    const parsed = parseReply(text);
+    if (parsed.fuelLph != null) {
+      next.fuelLph = parsed.fuelLph;
+      next.fuelKnown = true;
+      next.askFuel = true;
+      return next;
+    }
+  }
+  if (timedOut || replySilent(text)) {
+    next.fuelLph = null;
+    next.fuelKnown = false;
+    next.askFuel = false;
+    return next;
+  }
+  next.askFuel = prior.askFuel !== false;
+  return next;
+}
+
+export function promptAfterTimeout(timedOut) {
+  return !!timedOut;
+}
+
+export function takePrompt(discardNext, buffer) {
+  const text = String(buffer == null ? "" : buffer);
+  const at = text.indexOf(">");
+  if (at < 0) return { ready: false, discardNext: !!discardNext, text: "", rest: text };
+  const head = text.slice(0, at + 1);
+  const rest = text.slice(at + 1);
+  if (discardNext) return { ready: true, discardNext: false, text: "", rest };
+  return { ready: true, discardNext: false, text: head, rest };
+}
+
 export function holdCommands() {
   return {
     ok: true,
@@ -298,8 +339,30 @@ export function holdCommands() {
   };
 }
 
+export function forceOnCommands() {
+  return {
+    ok: true,
+    commands: ["ATSH 7E1", TESTER, FORCE_ON],
+  };
+}
+
 export function releaseCommands() {
   return ["ATSH 7E1", RELEASE];
+}
+
+// Engine mode and Cycle's engine phase are the car's Normal at every charge and every rpm.
+// The charge hold is not a plan. A refused hold does not start one.
+export function quietPlan(row) {
+  void row;
+  return "none";
+}
+
+// A new link can still be honoring the last charge hold. Release once, then the poll stays quiet.
+export function attachRelease(state) {
+  const row = state || {};
+  const engine = row.mode === "engine" || (row.mode === "cycle" && row.phase === "engine");
+  if (!engine) return [];
+  return releaseCommands();
 }
 
 export function onHoldRefused(queue, asserted) {
@@ -344,6 +407,85 @@ export function reconnectPlan(input) {
   return { retry: true, text: "Reconnecting", wait: waits[Math.min(attempts, waits.length - 1)] };
 }
 
+export const TRIP_HOLD_MS = 700;
+
+export function milesPerHour(speedKmh) {
+  if (typeof speedKmh !== "number" || !Number.isFinite(speedKmh)) return null;
+  return speedKmh * 0.621371;
+}
+
+export function tripRecord(trip) {
+  const row = trip && typeof trip === "object" ? trip : {};
+  const miles = Number(row.miles);
+  const electricMiles = Number(row.electricMiles);
+  return {
+    miles: Number.isFinite(miles) && miles >= 0 ? miles : 0,
+    electricMiles: Number.isFinite(electricMiles) && electricMiles >= 0 ? electricMiles : 0,
+  };
+}
+
+export function clearedTrip() {
+  return { miles: 0, electricMiles: 0 };
+}
+
+// One counter. Engine shut off is rpm under 400. A null rpm does not add electric miles.
+// A gap of 60 seconds still counts. A longer gap adds nothing. Speed under 1 mph adds nothing.
+export function tripStep(trip, sample) {
+  const base = tripRecord(trip);
+  const row = sample || {};
+  const dt = Number(row.dt);
+  const mph = Number(row.mph);
+  let miles = base.miles;
+  let electricMiles = base.electricMiles;
+  if (dt > 0 && dt <= 60 && Number.isFinite(mph) && mph >= 1) {
+    const added = (mph * dt) / 3600;
+    miles += added;
+    const rpm = row.rpm;
+    if (typeof rpm === "number" && Number.isFinite(rpm) && rpm < 400) electricMiles += added;
+  }
+  return { miles, electricMiles };
+}
+
+export function decodeDtcBytes(a, b) {
+  const prefix = "PCBU"[a >> 6] || "P";
+  const digit = (a >> 4) & 3;
+  const rest = ((a & 0x0f) << 8) | (b & 0xff);
+  return prefix + String(digit) + rest.toString(16).toUpperCase().padStart(3, "0");
+}
+
+export function parseDtcResponse(text) {
+  const raw = String(text || "").toUpperCase();
+  if (!raw.trim()) return null;
+  if (raw.includes("NO DATA") || raw.includes("UNABLE") || raw.includes("ERROR") || raw.includes("STOPPED") || raw.includes("?")) {
+    return null;
+  }
+  const compact = raw.replace(/[^0-9A-F]/g, "");
+  const match = compact.match(/4(?:3|7|A)([0-9A-F]{2})([0-9A-F]*)/);
+  if (!match) return null;
+  const count = parseInt(match[1], 16);
+  if (!Number.isFinite(count)) return null;
+  const data = match[2];
+  const codes = [];
+  for (let i = 0; i < count; i++) {
+    const hex = data.slice(i * 4, i * 4 + 4);
+    if (hex.length < 4) break;
+    codes.push(decodeDtcBytes(parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16)));
+  }
+  return codes;
+}
+
+export function clearAccepted(text) {
+  const raw = String(text || "").toUpperCase();
+  if (!raw.includes(">")) return false;
+  if (raw.includes("NO DATA") || raw.includes("UNABLE") || raw.includes("ERROR") || raw.includes("STOPPED") || raw.includes("?")) {
+    return false;
+  }
+  const compact = raw.replace(/[^0-9A-F]/g, "");
+  if (compact.includes("7F")) return false;
+  if (raw.includes("OK")) return true;
+  return compact.includes("44");
+}
+
 export function adapterLine(input) {
   const row = input || {};
   if (!row.hasBluetooth) return "No Bluetooth";
@@ -356,4 +498,10 @@ export function adapterLine(input) {
     return row.noReply ? name + " · No Reply" : name;
   }
   return "Not Connected";
+}
+
+export function connectFace(input) {
+  const row = input || {};
+  const lit = !!(row.connected && !row.reconnecting);
+  return { label: lit ? "CONNECTED" : "CONNECT", lit };
 }

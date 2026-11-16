@@ -1,0 +1,7 @@
+services:
+  voltpanel:
+    build: .
+    image: voltpanel:local
+    ports:
+      - "8877:80"
+    restart: unless-stopped

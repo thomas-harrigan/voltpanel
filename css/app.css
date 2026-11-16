@@ -4,10 +4,34 @@
   --ink: #ffffff;
   --quiet: rgba(255, 255, 255, 0.62);
   --track: rgba(255, 255, 255, 0.14);
-  /* Four button rows plus the header stay inside a 390×700 portrait. */
-  --dial: min(
-    calc((100vw - 40px) / 2),
-    calc((100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 132px) / 4)
+  --edge: 16px;
+  /* 1px leaves 13 to 14px of black beside the gauge stroke on a 393px iPhone. */
+  --side: 1px;
+  --col-gap: 12px;
+  --row-gap: 10px;
+  --mode-to-gauges: 12px;
+  --action-gap: 12px;
+  --action: 56px;
+  --header: 44px;
+  --label-1: 28px;
+  --label-2: 14px;
+  --mode-gap: 8px;
+  --mode-const: 28px;
+  --stage: calc(
+    100dvh
+    - env(safe-area-inset-top, 0px)
+    - env(safe-area-inset-bottom, 0px)
+    - 2 * var(--edge)
+    - var(--header)
+  );
+  --dial-w: calc((100vw - 2 * var(--side) - 2 * var(--col-gap)) / 3);
+  /* mode = (56 + dial * 0.794) / 2, so two dials plus that mode fill the stage. */
+  --dial-h: calc((var(--stage) - var(--mode-const) - var(--mode-to-gauges) - var(--label-1) - var(--row-gap) - var(--label-2) - var(--action-gap) - var(--action)) / (2 + 0.794 / 2));
+  --dial: max(0px, min(var(--dial-w), var(--dial-h)));
+  --gauge-row: calc(3 * var(--dial) + 2 * var(--col-gap));
+  --mode: min(
+    calc((56px + var(--dial) * 0.794) / 2),
+    calc((var(--gauge-row) - 3 * var(--mode-gap)) / 4)
   );
 }
 
@@ -43,16 +67,17 @@ body {
   display: flex;
   flex-direction: column;
   padding:
-    calc(6px + env(safe-area-inset-top))
-    12px
-    calc(6px + env(safe-area-inset-bottom));
+    calc(var(--edge) + env(safe-area-inset-top))
+    var(--side)
+    calc(var(--edge) + env(safe-area-inset-bottom));
 }
 
 .top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 40px;
+  height: var(--header);
+  min-height: var(--header);
 }
 
 @font-face {
@@ -95,35 +120,42 @@ body {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   width: 100%;
 }
 
-.modes,
-.grid {
-  width: calc(var(--dial) * 2 + 10px);
-  display: grid;
-  grid-template-columns: var(--dial) var(--dial);
-  column-gap: 10px;
-  justify-content: center;
+.cluster {
+  width: var(--gauge-row);
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .modes {
-  row-gap: 18px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--mode-gap);
+  width: 100%;
+  margin: 0 0 var(--mode-to-gauges);
 }
 
 .grid {
-  row-gap: 4px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: var(--dial) var(--dial) var(--dial);
+  column-gap: var(--col-gap);
+  row-gap: var(--row-gap);
+  justify-content: center;
 }
 
 .mode {
-  /* Gauge stroke outer edge is 79.4% of the dial box. The whole button matches that. */
-  width: calc(var(--dial) * 0.794);
-  height: calc(var(--dial) * 0.794);
-  justify-self: center;
+  /* Halfway from 56px to the gauge stroke, which is 79.4% of the dial. */
+  width: var(--mode);
+  height: var(--mode);
+  flex: 0 0 auto;
   border: 0;
   padding: 0;
   border-radius: 50%;
@@ -141,6 +173,10 @@ body {
   width: 100%;
   height: 100%;
   border-radius: 50%;
+}
+
+.mode .bezel {
+  padding: 8cqi;
 }
 
 .bezel {
@@ -166,6 +202,10 @@ body {
   pointer-events: none;
 }
 
+.mode .bezel::after {
+  padding: 8cqi;
+}
+
 .well {
   padding: 7px;
   background: #0a0c0e;
@@ -173,6 +213,10 @@ body {
     inset 0 2px 3px rgba(0, 0, 0, 0.85),
     inset 0 0 0 1px rgba(0, 0, 0, 0.65);
   transition: background 180ms linear, box-shadow 180ms linear;
+}
+
+.mode .well {
+  padding: 8cqi;
 }
 
 .face {
@@ -306,10 +350,207 @@ body {
 }
 
 .label {
-  margin-top: 0;
+  height: var(--label-2);
+  margin: 0;
+  overflow: hidden;
   font-size: 11px;
   letter-spacing: 0.14em;
+  line-height: 14px;
   color: var(--quiet);
+}
+
+.gauge:nth-child(-n + 3) .label {
+  height: var(--label-1);
+}
+
+.label .line {
+  line-height: 14px;
+  letter-spacing: 0.14em;
+}
+
+.bar {
+  position: relative;
+  width: 100%;
+  height: var(--action);
+  margin-top: var(--action-gap);
+}
+
+.metal {
+  position: absolute;
+  top: 0;
+  width: 56px;
+  height: 56px;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.42);
+  -webkit-touch-callout: none;
+  container-type: inline-size;
+}
+
+#diag {
+  left: calc(var(--dial) + var(--col-gap) / 2 - 28px);
+}
+
+#trip-reset {
+  left: calc(2 * var(--dial) + 1.5 * var(--col-gap) - 28px);
+}
+
+#connect {
+  left: calc(2 * var(--dial) + 2.5 * var(--col-gap) + 28px);
+}
+
+.metal .bezel,
+.metal .well {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.metal .bezel {
+  padding: 8cqi;
+}
+
+.metal .bezel::after {
+  padding: 8cqi;
+}
+
+.metal .well {
+  padding: 8cqi;
+}
+
+.metal .face {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.metal .line {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  line-height: 1.05;
+}
+
+.metal.pressed .face {
+  transform: scale(0.96);
+}
+
+#trip-reset .face {
+  background-image:
+    linear-gradient(#146b34, #3dbe6e),
+    radial-gradient(circle at 34% 26%, rgba(255, 255, 255, 0.92), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 34%, rgba(30, 34, 40, 0.16)),
+    repeating-linear-gradient(96deg, #d7dde3 0 1px, #f4f6f8 1px 2px, #c5ccd3 2px 3px, #e7ebef 3px 4px);
+  background-repeat: no-repeat;
+  background-position: bottom center, center, center, center;
+  background-size: 100% 0%, auto, auto, auto;
+  transition: background-size 120ms linear, color 120ms linear, transform 90ms ease;
+}
+
+#trip-reset.holding .face {
+  background-size: 100% 100%, auto, auto, auto;
+  color: #ffffff;
+  text-shadow: none;
+  transition-duration: 700ms, 700ms, 90ms;
+}
+
+#connect .face {
+  font-size: 8px;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+#connect.on .well {
+  background: #39f56a;
+  box-shadow:
+    0 0 12px 1px rgba(57, 245, 106, 0.8),
+    inset 0 0 5px #e7ffee;
+}
+
+.codes[hidden] { display: none; }
+
+.codes {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  padding:
+    calc(8px + env(safe-area-inset-top, 0px))
+    16px
+    calc(12px + env(safe-area-inset-bottom, 0px));
+  overflow: auto;
+  touch-action: pan-y;
+}
+
+.codes-top {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.codes-back {
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.codes h2 {
+  margin: 8px 0 12px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.codes-status {
+  margin: 0 0 12px;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.codes-status:empty { display: none; }
+
+.codes-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.codes-list h3 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--quiet);
+}
+
+.codes-list p {
+  margin: 0;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 20px;
+  letter-spacing: 0.04em;
+}
+
+#clear-codes {
+  min-height: 48px;
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  font-size: 16px;
+}
+
+#clear-codes.armed {
+  background: #8f1d18;
+  border-color: #8f1d18;
+  color: #ffffff;
 }
 
 .sheet[hidden] { display: none; }
