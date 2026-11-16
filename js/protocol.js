@@ -137,19 +137,18 @@ function stepSoc(next) {
     return leaveHold(next);
   }
   if (next.mode === "cycle") {
+    // One point above the floor turns the battery back on. lockUntil belongs to Electric.
+    const backOn = floor + 1;
     if (next.phase !== "engine") {
-      if (underFloor(soc, next.boost, next.lockUntil)) {
-        if (soc <= floor) next.lockUntil = soc + 2;
+      if (soc <= floor) {
         next.phase = "engine";
-        return finish(next, "release");
+        return leaveHold(next);
       }
-      if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
       next.phase = "battery";
       return finish(next, "force-off");
     }
-    if (soc >= 55) {
+    if (soc >= backOn) {
       next.phase = "battery";
-      if (next.lockUntil != null && soc >= next.lockUntil) next.lockUntil = null;
       return finish(next, "force-off");
     }
     return leaveHold(next);
@@ -192,7 +191,7 @@ export function stepDrive(state, event) {
       return finish(next, "force-off");
     }
     next.mode = "cycle";
-    if (underFloor(next.soc, next.boost, next.lockUntil)) {
+    if (numeric(next.soc) && next.soc <= holdFloor(next.boost)) {
       next.phase = "engine";
       return leaveHold(next);
     }
