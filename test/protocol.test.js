@@ -16,6 +16,7 @@ import {
   decodeVoltage,
   economy,
   engineKnown,
+  holdGate,
   noteVoltFuel,
   promptAfterTimeout,
   takePrompt,
@@ -460,8 +461,9 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=25"), true);
-  assert.equal(app.includes("engineKnown"), true);
+  assert.equal(app.includes("protocol.js?v=26"), true);
+  assert.equal(app.includes("holdGate"), true);
+  assert.equal(app.includes("engineKnown"), false);
   const refused = app.slice(app.indexOf('job.tag === "hold" && !timedOut'), app.indexOf('job.tag === "on"'));
   assert.equal(refused.includes("asserted = false"), false);
   assert.equal(refused.includes('busKind = "none"'), false);
@@ -695,4 +697,30 @@ test("engine known is spin, motion with a finite rpm, or an earlier proof", () =
   assert.equal(engineKnown({ rpm: 0, speedKmh: 1 }), true);
   assert.equal(engineKnown({ proved: true }), true);
   assert.equal(holdCommands().commands.includes(FORCE_ON), false);
+});
+
+test("hold gate is stopped, a start, or two running samples", () => {
+  assert.equal(holdGate(null, undefined), "wait");
+  assert.equal(holdGate(null, null), "wait");
+  assert.equal(holdGate(0, NaN), "wait");
+  assert.equal(holdGate(null, 0), "hold");
+  assert.equal(holdGate(0, 0), "hold");
+  assert.equal(holdGate(0, 200), "release");
+  assert.equal(holdGate(200, 399), "release");
+  assert.equal(holdGate(0, 400), "wait");
+  assert.equal(holdGate(400, 800), "hold");
+  assert.equal(holdGate(800, 800), "hold");
+  assert.equal(holdGate(null, 400), "wait");
+  assert.equal(engineKnown({ rpm: 200, speedKmh: 10 }), true);
+  assert.equal(holdGate(0, 200), "release");
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  const hold = app.slice(app.indexOf("function considerHold"), app.indexOf("function enact"));
+  assert.equal(hold.includes("holdGate(previousRpm, proofRpm)"), true);
+  assert.equal(hold.includes("engineKnown"), false);
+  assert.equal(hold.includes("speed"), false);
+  assert.equal(hold.includes('enact("release")'), true);
+  assert.equal(app.includes("previousRpm = proofRpm"), true);
+  const cleared = app.slice(app.indexOf("function clearProof"), app.indexOf("function onLinkDrop"));
+  assert.equal(cleared.includes("previousRpm = null"), true);
+  assert.equal(cleared.includes("proofRpm = null"), true);
 });

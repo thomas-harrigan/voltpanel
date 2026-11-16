@@ -444,6 +444,17 @@ export function milesPerHour(speedKmh) {
   return speedKmh * 0.621371;
 }
 
+// Rpm 0 may hold the engine off. 1–399 is a start, so the hold lets go.
+// One sample at 400 can be the crank. The next sample at 400 or more may hold again.
+// Speed is not an input.
+export function holdGate(previousRpm, rpm) {
+  if (!numeric(rpm)) return "wait";
+  if (rpm === 0) return "hold";
+  if (rpm > 0 && rpm < 400) return "release";
+  if (rpm >= 400 && numeric(previousRpm) && previousRpm >= 400) return "hold";
+  return "wait";
+}
+
 export function engineKnown(row) {
   const item = row || {};
   if (item.proved === true) return true;

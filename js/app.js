@@ -29,8 +29,8 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-  engineKnown,
-} from "./protocol.js?v=25";
+  holdGate,
+} from "./protocol.js?v=26";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -75,9 +75,8 @@ let lastHold = 0;
 let asserted = false;
 let busKind = "none";
 let forceOnRejected = false;
-let proved = false;
 let proofRpm = null;
-let proofSpeed = null;
+let previousRpm = null;
 let rpmMisses = 0;
 let pollTimer = 0;
 let holdPoll = false;
@@ -349,7 +348,12 @@ function finalPlan(fallback) {
 
 function considerHold(forceNow) {
   if (!linked()) return;
-  if (!engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) return;
+  const gate = holdGate(previousRpm, proofRpm);
+  if (gate === "wait") return;
+  if (gate === "release") {
+    if (asserted || busKind === "off") enact("release");
+    return;
+  }
   const now = Date.now();
   if (!forceNow && now - lastHold < 2000) return;
   dropBus("on");
@@ -527,9 +531,8 @@ function scheduleRetry(next) {
 }
 
 function clearProof() {
-  proved = false;
   proofRpm = null;
-  proofSpeed = null;
+  previousRpm = null;
   rpmMisses = 0;
 }
 
@@ -760,14 +763,10 @@ function onReply(job, text, timedOut) {
   if (parsed.rpm != null) state.rpm = parsed.rpm;
   if (job.tag === "rpm" && !timedOut && typeof parsed.rpm === "number" && Number.isFinite(parsed.rpm)) {
     rpmMisses = 0;
+    previousRpm = proofRpm;
     proofRpm = parsed.rpm;
-    if (engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) proved = true;
   }
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
-  if (job.tag === "speed" && !timedOut && typeof parsed.speedKmh === "number" && Number.isFinite(parsed.speedKmh)) {
-    proofSpeed = parsed.speedKmh;
-    if (typeof proofRpm === "number" && Number.isFinite(proofRpm) && engineKnown({ proved, rpm: proofRpm, speedKmh: proofSpeed })) proved = true;
-  }
   if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) noteTripSample();
   if (job.tag === "fuel") {
     const next = noteVoltFuel({
