@@ -263,6 +263,15 @@ export function holdRefused(text) {
   return true;
 }
 
+const MPG_TOP = 250;
+
+function cappedMpg(mph, perHour) {
+  if (!numeric(perHour) || perHour <= 0) return MPG_TOP;
+  const mpg = mph / perHour;
+  if (!Number.isFinite(mpg) || mpg > MPG_TOP) return MPG_TOP;
+  return mpg;
+}
+
 export function economy(state) {
   const row = state || {};
   if (!numeric(row.speedKmh)) return { label: "MPG", value: null };
@@ -270,18 +279,15 @@ export function economy(state) {
   if (mph < 1) return { label: "MPG", value: 0 };
   const fuelUsable = row.fuelKnown !== false && numeric(row.fuelLph);
   if (fuelUsable && row.fuelLph >= 0.05) {
-    return { label: "MPG", value: mph / (row.fuelLph * 0.264172) };
+    return { label: "MPG", value: cappedMpg(mph, row.fuelLph * 0.264172) };
   }
-  if (fuelUsable) return { label: "MPG", value: 40 };
   const rpmKnown = numeric(row.rpm);
-  if (!rpmKnown || row.rpm < 400) return { label: "MPG", value: 40 };
+  if (!rpmKnown || row.rpm < 400) return { label: "MPG", value: null };
+  if (fuelUsable) return { label: "MPG", value: cappedMpg(mph, row.fuelLph * 0.264172) };
   const mafKnown = row.mafKnown !== false && numeric(row.mafGs);
   if (mafKnown) {
-    if (row.mafGs >= 0.3) {
-      const gph = (row.mafGs / 14.7) * 3600 / 453.592 / 6.17;
-      return { label: "MPG", value: mph / gph };
-    }
-    return { label: "MPG", value: 40 };
+    const gph = (row.mafGs / 14.7) * 3600 / 453.592 / 6.17;
+    return { label: "MPG", value: cappedMpg(mph, gph) };
   }
   return { label: "MPG", value: null };
 }

@@ -34,7 +34,7 @@ test("battery is 0 to 100 and the old voltage label is gone", () => {
   assert.equal(GAUGES.battery.red, "low");
   assert.equal(GAUGES.voltage, undefined);
   assert.equal(Object.values(GAUGES).some((spec) => spec.label === "Voltage"), false);
-  assert.equal(GAUGES.economy.max, 40);
+  assert.equal(GAUGES.economy.max, 250);
   assert.equal(GAUGES.economy.label, "MPG");
   assert.equal(GAUGES.economy.mpgeMax, undefined);
   assert.equal(GAUGES.rpm.min, 0);
@@ -115,15 +115,22 @@ test("arc starts at the lower left and the dash follows the value", () => {
   assert.equal(fraction(0, 0, 6000), 0);
 });
 
-test("action centers sit on the column gaps", () => {
+test("action centers are one centered trio", () => {
   const dial = 140;
   const gap = 12;
+  const button = 56;
   const centers = actionCenters(dial, gap);
-  assert.equal(centers.diag, dial + gap / 2);
-  assert.equal(centers.reset, 2 * dial + 1.5 * gap);
+  const cluster = 3 * dial + 2 * gap;
+  const group = 3 * button + 2 * gap;
+  const start = (cluster - group) / 2;
+  assert.equal(centers.diag, start + button / 2);
+  assert.equal(centers.reset, start + button + gap + button / 2);
+  assert.equal(centers.connect, start + 2 * (button + gap) + button / 2);
+  assert.equal(centers.reset - centers.diag, button + gap);
+  assert.equal(centers.connect - centers.reset, button + gap);
   const css = readFileSync(new URL("../css/app.css", import.meta.url), "utf8");
-  assert.equal(css.includes("var(--dial) + var(--col-gap) / 2"), true);
-  assert.equal(css.includes("2 * var(--dial) + 1.5 * var(--col-gap)"), true);
+  assert.equal(css.includes("justify-content: center"), true);
+  assert.equal(css.includes("gap: var(--col-gap)"), true);
   assert.equal(css.includes("(56px + var(--dial) * 0.794) / 2"), true);
 });
 
@@ -153,8 +160,29 @@ test("modes and gauges stay in face order", () => {
   assert.equal(formatMiles(null), "—");
 });
 
+test("economy color stays on the old 0 to 40 scale", () => {
+  const color = { ...GAUGES.economy, max: 40 };
+  const low = zoneColors(0, color);
+  const mid = zoneColors(34, color);
+  const full = zoneColors(40, color);
+  const above = zoneColors(250, color);
+  assert.ok(redder(low[0]) && redder(low[1]));
+  assert.ok(greener(mid[0]) && greener(mid[1]));
+  assert.ok(!redder(mid[0]) && !redder(mid[1]));
+  assert.ok(greener(full[0]) && greener(full[1]));
+  assert.deepEqual(above, full);
+  assert.ok(fraction(34, 0, GAUGES.economy.max) < 0.2);
+  assert.equal(fraction(40, 0, 40), 1);
+  const battery = zoneColors(100, GAUGES.battery);
+  assert.deepEqual(battery, zoneColors(100, { min: 0, max: 100, red: "low" }));
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  assert.equal(app.includes('key === "economy" ? { ...spec, max: 40 }'), true);
+});
+
 test("shot fixtures paint the four modes and both output sides", () => {
   assert.equal(SHOTS.electric.mode, "electric");
+  assert.equal(SHOTS.electric.mpg, null);
+  assert.equal(SHOTS.engine.mpg, 34);
   assert.equal(SHOTS.engine.mode, "engine");
   assert.equal(SHOTS.cycle.mode, "cycle");
   assert.equal(SHOTS.locked.soc <= 24, true);

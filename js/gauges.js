@@ -7,7 +7,7 @@ export const GAUGES = {
   output: { min: -120, max: 120, unit: "kW", label: "Output" },
   electric: { min: 0, max: 500, unit: "mi", label: "Electric Miles", solid: "#3dbe6e", decimals: 1 },
   rpm: { min: 0, max: 6000, redFrom: 4800, unit: "rpm", label: "RPM" },
-  economy: { min: 0, max: 40, red: "low", unit: "mpg", label: "MPG" },
+  economy: { min: 0, max: 250, red: "low", unit: "mpg", label: "MPG" },
   trip: { min: 0, max: 500, unit: "mi", label: "Trip", solid: "#3dbe6e", decimals: 1 },
 };
 
@@ -42,9 +42,14 @@ export function formatMiles(value) {
 }
 
 export function actionCenters(dial, gap) {
+  const button = 56;
+  const cluster = 3 * dial + 2 * gap;
+  const group = 3 * button + 2 * gap;
+  const start = (cluster - group) / 2;
   return {
-    diag: dial + gap / 2,
-    reset: 2 * dial + 1.5 * gap,
+    diag: start + button / 2,
+    reset: start + button + gap + button / 2,
+    connect: start + 2 * (button + gap) + button / 2,
   };
 }
 
@@ -154,7 +159,7 @@ export function arcPath(cx = 50, cy = 50, r = ARC_R) {
 }
 
 export const SHOTS = {
-  electric: { mode: "electric", boost: false, phase: "battery", soc: 80, lockUntil: null, kw: 24, rpm: 0, mpg: 0 },
+  electric: { mode: "electric", boost: false, phase: "battery", soc: 80, lockUntil: null, kw: 24, rpm: 0, mpg: null },
   engine: { mode: "engine", boost: false, phase: "engine", soc: 50, lockUntil: null, kw: 18, rpm: 2400, mpg: 34 },
   cycle: { mode: "cycle", boost: false, phase: "battery", soc: 40, lockUntil: null, kw: 12, rpm: 1600, mpg: 38 },
   locked: { mode: "engine", boost: false, phase: "engine", soc: 21, lockUntil: 23, kw: 8, rpm: 1700, mpg: 28 },

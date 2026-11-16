@@ -363,22 +363,34 @@ test("mpg stays MPG, zero when stopped, and finite from a fuel sample", () => {
   const maf = economy({ speedKmh: 100, rpm: 1500, fuelKnown: false, mafKnown: true, mafGs: 5 });
   assert.equal(maf.label, "MPG");
   assert.equal(Number.isFinite(maf.value), true);
-  assert.equal(economy({ speedKmh: 100, fuelKnown: true, fuelLph: 0 }).value, 40);
-  assert.equal(economy({ speedKmh: 100, rpm: 0, fuelKnown: false, mafKnown: false }).value, 40);
-  assert.equal(economy({ speedKmh: 100, fuelKnown: false, mafKnown: false }).value, 40);
+  assert.equal(economy({ speedKmh: 100, fuelKnown: true, fuelLph: 0 }).value, null);
+  assert.equal(economy({ speedKmh: 100, rpm: 0, fuelKnown: false, mafKnown: false }).value, null);
+  assert.equal(economy({ speedKmh: 100, fuelKnown: false, mafKnown: false }).value, null);
   assert.equal(economy({ speedKmh: 100, rpm: 400, fuelKnown: false, mafKnown: false }).value, null);
   assert.equal(economy({ speedKmh: 100, rpm: 1800, fuelKnown: false, mafKnown: false }).value, null);
   const rate = economy({ speedKmh: 100, fuelKnown: true, fuelLph: 1 });
   assert.ok(rate.value > 0);
+  assert.ok(rate.value <= 250);
   assert.notEqual(rate.value, 40);
   const src = readFileSync(new URL("../js/protocol.js", import.meta.url), "utf8");
   assert.equal(src.includes("MPGe"), false);
 });
 
-test("moving with rpm 0 and no fuel answer is 40", () => {
-  assert.equal(economy({ speedKmh: 100, rpm: 0, fuelKnown: false, mafKnown: false }).value, 40);
-  assert.equal(economy({ speedKmh: 16, rpm: 0 }).value, 40);
-  assert.equal(economy({ speedKmh: 100, rpm: 399, fuelLph: 0.04, fuelKnown: true }).value, 40);
+test("moving with rpm 0 and no fuel answer is blank", () => {
+  assert.equal(economy({ speedKmh: 100, rpm: 0, fuelKnown: false, mafKnown: false }).value, null);
+  assert.equal(economy({ speedKmh: 16, rpm: 0 }).value, null);
+  assert.equal(economy({ speedKmh: 100, rpm: 399, fuelLph: 0.04, fuelKnown: true }).value, null);
+  const coast = economy({ speedKmh: 100, rpm: 800, fuelKnown: true, fuelLph: 0.01 });
+  assert.equal(Number.isFinite(coast.value), true);
+  assert.ok(coast.value > 0);
+  assert.ok(coast.value <= 250);
+  assert.equal(economy({ speedKmh: 100, rpm: 800, fuelKnown: true, fuelLph: 0 }).value, 250);
+  const lowMaf = economy({ speedKmh: 100, rpm: 900, fuelKnown: false, mafKnown: true, mafGs: 0.1 });
+  assert.equal(Number.isFinite(lowMaf.value), true);
+  assert.ok(lowMaf.value <= 250);
+  const electricFuel = economy({ speedKmh: 100, rpm: 0, fuelKnown: true, fuelLph: 1 });
+  assert.equal(Number.isFinite(electricFuel.value), true);
+  assert.ok(electricFuel.value > 0 && electricFuel.value <= 250);
   const kept = noteVoltFuel({ mafKnown: true, mafGs: 4, fuelKnown: true, fuelLph: 1, askFuel: true }, "NO DATA", false);
   assert.equal(kept.askFuel, false);
   assert.equal(kept.fuelKnown, false);

@@ -369,15 +369,17 @@ body {
 }
 
 .bar {
-  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--col-gap);
   width: 100%;
   height: var(--action);
   margin-top: var(--action-gap);
 }
 
 .metal {
-  position: absolute;
-  top: 0;
+  flex: 0 0 auto;
   width: 56px;
   height: 56px;
   border: 0;
@@ -387,18 +389,6 @@ body {
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.42);
   -webkit-touch-callout: none;
   container-type: inline-size;
-}
-
-#diag {
-  left: calc(var(--dial) + var(--col-gap) / 2 - 28px);
-}
-
-#trip-reset {
-  left: calc(2 * var(--dial) + 1.5 * var(--col-gap) - 28px);
-}
-
-#connect {
-  left: calc(2 * var(--dial) + 2.5 * var(--col-gap) + 28px);
 }
 
 .metal .bezel,

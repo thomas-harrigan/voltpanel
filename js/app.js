@@ -28,8 +28,8 @@ import {
   tripRecord,
   tripStep,
   writePlan,
-} from "./protocol.js?v=19";
-import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=7";
+} from "./protocol.js?v=20";
+import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
 const adapterEl = $("adapter");
@@ -174,7 +174,8 @@ function paintGauge(key, value) {
   const fill = $("fill-" + key);
   fill.style.strokeLinecap = next.startsWith("0.00") ? "butt" : "round";
   if (fill.getAttribute("stroke-dasharray") !== next) fill.setAttribute("stroke-dasharray", next);
-  const [a, b] = spec.solid ? [spec.solid, spec.solid] : (key === "rpm" ? rpmColors(value) : zoneColors(value, spec));
+  const colorSpec = key === "economy" ? { ...spec, max: 40 } : spec;
+  const [a, b] = spec.solid ? [spec.solid, spec.solid] : (key === "rpm" ? rpmColors(value) : zoneColors(value, colorSpec));
   const stop0 = $("stop0-" + key);
   const stop1 = $("stop1-" + key);
   if (stop0 && stop0.getAttribute("stop-color") !== a) stop0.setAttribute("stop-color", a);
