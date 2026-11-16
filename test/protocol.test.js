@@ -263,6 +263,50 @@ test("a stale lock does not block the cycle return at 46 or bounce it off", () =
   assert.equal(held.plan, "force-off");
 });
 
+test("cycle with an empty charge reading holds the battery and leaves the engine phase alone", () => {
+  const pressed = stepDrive(drive({ soc: null }), { type: "cycle" });
+  assert.equal(pressed.state.mode, "cycle");
+  assert.equal(pressed.state.phase, "battery");
+  assert.equal(pressed.state.soc, null);
+  assert.equal(pressed.plan, "force-off");
+
+  const held = stepDrive(pressed.state, { type: "soc", soc: null });
+  assert.equal(held.state.mode, "cycle");
+  assert.equal(held.state.phase, "battery");
+  assert.equal(held.state.soc, null);
+  assert.equal(held.state.previousPlan, "force-off");
+  assert.equal(held.plan, "force-off");
+
+  const engine = stepDrive(drive({
+    mode: "cycle",
+    phase: "engine",
+    soc: null,
+    previousPlan: "none",
+  }), { type: "soc", soc: null });
+  assert.equal(engine.state.mode, "cycle");
+  assert.equal(engine.state.phase, "engine");
+  assert.equal(engine.state.soc, null);
+  assert.notEqual(engine.plan, "force-off");
+
+  const row = drive();
+  delete row.soc;
+  const omitted = stepDrive(row, { type: "cycle" });
+  assert.equal(omitted.state.phase, "battery");
+  assert.equal(omitted.state.soc, null);
+  assert.equal(omitted.plan, "force-off");
+  const omittedPoll = stepDrive(omitted.state, { type: "soc" });
+  assert.equal(omittedPoll.state.phase, "battery");
+  assert.equal(omittedPoll.state.soc, null);
+  assert.equal(omittedPoll.plan, "force-off");
+  const running = drive({ mode: "cycle", phase: "engine", previousPlan: "none" });
+  delete running.soc;
+  const omittedEngine = stepDrive(running, { type: "soc" });
+  assert.equal(omittedEngine.state.mode, "cycle");
+  assert.equal(omittedEngine.state.phase, "engine");
+  assert.equal(omittedEngine.state.soc, null);
+  assert.notEqual(omittedEngine.plan, "force-off");
+});
+
 test("leaving cycle keeps the phase it was in", () => {
   const battery = stepDrive(drive({ mode: "cycle", phase: "battery", soc: 40, previousPlan: "force-off" }), { type: "cycle" });
   assert.equal(battery.state.mode, "electric");
