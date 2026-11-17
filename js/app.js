@@ -10,6 +10,7 @@ import {
   attachRelease,
   electricBlocked,
   holdCommands,
+  forceOnCommands,
   holdRefused,
   kilowatts,
   quietPlan,
@@ -30,7 +31,12 @@ import {
   tripStep,
   writePlan,
   holdGate,
-} from "./protocol.js?v=26";
+  holdThroughCrank,
+  emptyFloor,
+  floorAssist,
+  floorBus,
+  floorFace,
+} from "./protocol.js?v=28";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -59,6 +65,7 @@ let drive = {
   soc: null,
   lockUntil: null,
   previousPlan: "none",
+  sustain: false,
 };
 let shotMode = false;
 let device = null;
@@ -67,6 +74,9 @@ let notifyChar = null;
 let buffer = "";
 let discardNext = false;
 let askFuel = true;
+let askPedal = true;
+let floor = emptyFloor();
+let lastTripEngine = false;
 let waiters = [];
 let queue = [];
 let busy = false;
@@ -75,6 +85,7 @@ let lastHold = 0;
 let asserted = false;
 let busKind = "none";
 let forceOnRejected = false;
+let lastOn = 0;
 let proofRpm = null;
 let previousRpm = null;
 let rpmMisses = 0;
@@ -94,6 +105,7 @@ let holdPointer = null;
 const poll = [
   ["7DF", "01 0C", "rpm"],
   ["7DF", "01 0D", "speed"],
+  ["7DF", "01 49", "pedal"],
   ["7DF", "01 5E", "fuel"],
   ["7E0", "01 10", "maf"],
   ["7DF", "01 5B", "soc"],
@@ -123,12 +135,12 @@ function setText(el, text) {
 }
 
 function paintModes() {
+  const face = floorFace(drive.mode, drive.phase, !shotMode && floor.active);
   const holding = drive.mode === "electric";
   const blocked = electricBlocked(drive);
-  const cycle = drive.mode === "cycle";
-  const enginePhase = drive.phase === "engine";
-  const electricOn = holding || (cycle && !enginePhase);
-  const engineOn = drive.mode === "engine" || (cycle && enginePhase);
+  const cycle = face.cycle;
+  const electricOn = face.electric;
+  const engineOn = face.engine;
   const electricBtn = $("electric");
   electricBtn.classList.toggle("on", electricOn);
   electricBtn.setAttribute("aria-pressed", electricOn ? "true" : "false");
@@ -232,6 +244,7 @@ function applyShot(shot) {
     soc: shot.soc,
     lockUntil: shot.lockUntil == null ? null : shot.lockUntil,
     previousPlan: shot.mode === "electric" ? "force-off" : "none",
+    sustain: false,
   };
   state.soc = shot.soc;
   state.kw = shot.kw;
@@ -254,6 +267,7 @@ function loadDrive() {
     soc: null,
     lockUntil: null,
     previousPlan: "none",
+    sustain: false,
   };
   try {
     let mode = localStorage.getItem("voltpanel.mode");
@@ -270,6 +284,7 @@ function loadDrive() {
       soc: null,
       lockUntil: null,
       previousPlan: mode === "electric" ? "force-off" : "none",
+      sustain: localStorage.getItem("voltpanel.sustain") === "1",
     };
   } catch {
     return blank;
@@ -299,7 +314,12 @@ function noteTripSample() {
   const now = Date.now();
   const mph = milesPerHour(state.speedKmh);
   if (lastTripAt) {
-    const next = tripStep(trip, { mph: lastTripMph, rpm: lastTripRpm, dt: (now - lastTripAt) / 1000 });
+    const next = tripStep(trip, {
+      mph: lastTripMph,
+      rpm: lastTripRpm,
+      dt: (now - lastTripAt) / 1000,
+      engine: floor.active || lastTripEngine,
+    });
     const changed = next.miles !== trip.miles || next.electricMiles !== trip.electricMiles;
     trip = next;
     if (changed) saveTrip();
@@ -307,6 +327,7 @@ function noteTripSample() {
   lastTripAt = now;
   lastTripMph = mph;
   lastTripRpm = Number.isFinite(state.rpm) ? state.rpm : null;
+  lastTripEngine = floor.active;
 }
 
 function persistDrive() {
@@ -316,6 +337,7 @@ function persistDrive() {
     localStorage.setItem("voltpanel.boost", drive.boost ? "1" : "0");
     if (drive.mode === "cycle") localStorage.setItem("voltpanel.phase", drive.phase === "engine" ? "engine" : "battery");
     else localStorage.removeItem("voltpanel.phase");
+    localStorage.setItem("voltpanel.sustain", drive.sustain ? "1" : "0");
     localStorage.removeItem("voltpanel.lockUntil");
     localStorage.removeItem("voltpanel.electric");
   } catch {
@@ -342,15 +364,54 @@ function finalPlan(fallback) {
     forceOnOk: !forceOnRejected,
   });
   if (quiet !== "none") return quiet;
-  if (busKind === "on" && fallback !== "force-off") return "release";
+  if (busKind === "on" && fallback !== "force-off" && fallback !== "force-on") return "release";
   return fallback;
+}
+
+function keptPlan() {
+  if (drive.previousPlan === "force-off") return "force-off";
+  if (drive.previousPlan === "force-on") return "force-on";
+  return "none";
+}
+
+function syncFloor(event) {
+  const stepped = floorAssist(floor, event);
+  floor = stepped.state;
+  return stepped.plan;
+}
+
+function holdOnBus() {
+  return busKind === "off" || asserted;
+}
+
+function driveEnact(plan) {
+  const bus = floorBus(floor.active ? "engine" : "none", holdOnBus());
+  if (bus === "release") {
+    enact("release");
+    return;
+  }
+  if (bus === "none") return;
+  enact(plan);
+}
+
+function considerOn(forceNow) {
+  if (!linked()) return;
+  const now = Date.now();
+  if (!forceNow && now - lastOn < 2000) return;
+  dropBus("hold");
+  dropBus("release");
+  busKind = "on";
+  if (queue.some((item) => item.tag === "on")) return;
+  lastOn = now;
+  asserted = false;
+  for (const cmd of forceOnCommands().commands) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "on");
 }
 
 function considerHold(forceNow) {
   if (!linked()) return;
   const gate = holdGate(previousRpm, proofRpm);
   if (gate === "wait") return;
-  if (gate === "release") {
+  if (gate === "release" && !holdThroughCrank(drive)) {
     if (asserted || busKind === "off") enact("release");
     return;
   }
@@ -366,7 +427,11 @@ function considerHold(forceNow) {
 }
 
 function enact(plan) {
-  if (plan === "force-on") return;
+  if (plan === "force-on") {
+    drive.previousPlan = "force-on";
+    considerOn(busKind !== "on");
+    return;
+  }
   if (plan === "force-off") {
     drive.previousPlan = "force-off";
     considerHold(busKind !== "off");
@@ -390,11 +455,12 @@ function applyDrive(event) {
   const result = stepDrive(drive, event);
   drive = result.state;
   persistDrive();
-  enact(finalPlan(result.plan));
+  driveEnact(finalPlan(result.plan));
   paintModes();
 }
 
 function press(type) {
+  syncFloor({ type: "cancel", now: Date.now() });
   drive.soc = state.soc;
   if (type === "electric" && electricBlocked(drive)) {
     if (drive.mode !== "electric") return;
@@ -548,6 +614,9 @@ function onLinkDrop(next) {
   notifyChar = null;
   asserted = false;
   busKind = "none";
+  floor = emptyFloor();
+  askPedal = true;
+  lastTripEngine = false;
   promptSeen = false;
   noReply = false;
   buffer = "";
@@ -692,6 +761,9 @@ async function openSession() {
   buffer = "";
   discardNext = false;
   askFuel = true;
+  askPedal = true;
+  floor = emptyFloor();
+  lastTripEngine = false;
   header = "";
   clearInterval(pollTimer);
   clearQueue();
@@ -747,7 +819,7 @@ function onReply(job, text, timedOut) {
   if (job.tag === "on" && !timedOut && holdRefused(text)) {
     forceOnRejected = true;
     queue = queue.filter((item) => item.tag !== "on");
-    enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "release"));
+    enact(finalPlan("release"));
     paintLive();
     return;
   }
@@ -767,6 +839,20 @@ function onReply(job, text, timedOut) {
     proofRpm = parsed.rpm;
   }
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
+  const wasActive = floor.active;
+  const nowMs = Date.now();
+  if (job.tag === "pedal") {
+    if (!timedOut && parsed.pedalPct != null) {
+      syncFloor({ type: "pedal", pedalPct: parsed.pedalPct, now: nowMs });
+    } else if (!timedOut && replySilent(text)) {
+      askPedal = false;
+      syncFloor({ type: "pedal", pedalPct: null, now: nowMs });
+    }
+  }
+  if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) {
+    syncFloor({ type: "speed", speedKmh: parsed.speedKmh, now: nowMs });
+  }
+  syncFloor({ type: "tick", now: nowMs });
   if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) noteTripSample();
   if (job.tag === "fuel") {
     const next = noteVoltFuel({
@@ -796,11 +882,11 @@ function onReply(job, text, timedOut) {
   if (parsed.current != null) state.current = parsed.current;
   if (state.voltage != null && state.current != null) state.kw = kilowatts(state.voltage, state.current);
   if (parsed.rpm != null || parsed.voltage != null || parsed.speedKmh != null) state.live = true;
-  if (parsed.soc != null) {
-    state.soc = parsed.soc;
-    applyDrive({ type: "soc", soc: parsed.soc });
+  if (parsed.soc != null) state.soc = parsed.soc;
+  if (parsed.soc != null || (wasActive && !floor.active)) {
+    applyDrive({ type: "soc", soc: state.soc });
   } else {
-    enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "none"));
+    driveEnact(finalPlan(keptPlan()));
   }
   paintLive();
 }
@@ -813,6 +899,7 @@ function startPoll() {
       const [head, cmd, tag] = poll[pollIndex % poll.length];
       pollIndex += 1;
       if (tag === "fuel" && !askFuel) continue;
+      if (tag === "pedal" && !askPedal) continue;
       enqueuePid(head, cmd, tag);
       return;
     }
@@ -857,7 +944,7 @@ async function attach(next) {
   paintAdapter();
   for (const cmd of INIT) enqueue(cmd, "init");
   startPoll();
-  enact(finalPlan(drive.previousPlan === "force-off" ? "force-off" : "none"));
+  driveEnact(finalPlan(keptPlan()));
   if (!queue.some((job) => job.tag === "release")) {
     for (const cmd of attachRelease(drive)) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "release");
   }
@@ -907,6 +994,9 @@ function disconnect() {
   asserted = false;
   busKind = "none";
   forceOnRejected = false;
+  floor = emptyFloor();
+  askPedal = true;
+  lastTripEngine = false;
   clearProof();
   promptSeen = false;
   noReply = false;

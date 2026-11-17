@@ -68,8 +68,20 @@ export function decodeSoc(a) {
   return (a * 100) / 255;
 }
 
+export function decodePedal(a) {
+  return (a * 100) / 255;
+}
+
 export function holdFloor(boost) {
   return boost ? 22 : 45;
+}
+
+// A crank or a spindown above 22% stays on the engine-off hold. Releasing there loads the clutch.
+export function holdThroughCrank(row) {
+  const item = row || {};
+  if (item.sustain === true) return false;
+  const soc = item.soc;
+  return typeof soc === "number" && Number.isFinite(soc) && soc > 22;
 }
 
 function numeric(value) {
@@ -96,38 +108,48 @@ function aboveRelease(soc, boost) {
 function cloneDrive(state) {
   const row = state || {};
   const mode = row.mode === "electric" || row.mode === "engine" || row.mode === "cycle" ? row.mode : "off";
+  const previous = row.previousPlan;
   return {
     mode,
     boost: !!row.boost,
     phase: row.phase === "engine" ? "engine" : "battery",
     soc: numeric(row.soc) ? row.soc : null,
     lockUntil: numeric(row.lockUntil) ? row.lockUntil : null,
-    previousPlan: row.previousPlan === "force-off" || row.previousPlan === "release" ? row.previousPlan : "none",
+    previousPlan: previous === "force-off" || previous === "force-on" || previous === "release" ? previous : "none",
   };
 }
 
 function finish(next, plan) {
-  if (plan === "force-off") next.previousPlan = "force-off";
+  if (plan === "force-off" || plan === "force-on") next.previousPlan = plan;
   else if (plan === "release") next.previousPlan = "none";
   return { state: next, plan };
 }
 
 function leaveHold(next) {
-  if (next.previousPlan === "force-off") return finish(next, "release");
+  if (next.previousPlan === "force-off" || next.previousPlan === "force-on") return finish(next, "release");
   return { state: next, plan: "none" };
+}
+
+// MyVoltControl engine-on. Above 40% and below 46% it is the light run.
+// At 46% an on-command is replaced by the engine-off hold. At 40% and below it is not sent.
+function engineOn(next) {
+  const soc = next.soc;
+  if (numeric(soc) && soc > 40 && soc < 46) return finish(next, "force-on");
+  if (numeric(soc) && soc >= 46 && next.previousPlan === "force-on") return finish(next, "force-off");
+  return leaveHold(next);
 }
 
 function engineShowing(next) {
   return next.mode === "engine" || (next.mode === "cycle" && next.phase === "engine");
 }
 
-// Boost is done. Cycle stays in the engine phase until 46%.
+// Boost is done. The engine phase then runs until 46%. Below 40% that phase does not send engine-on.
 function endBoost(next) {
   next.boost = false;
   next.lockUntil = null;
   next.mode = "cycle";
   next.phase = "engine";
-  return leaveHold(next);
+  return engineOn(next);
 }
 
 export function restorePhase(mode, saved) {
@@ -140,6 +162,7 @@ function stepSoc(next) {
   if (!numeric(soc)) {
     const holding = next.mode === "electric" || (next.mode === "cycle" && next.phase !== "engine");
     if (holding && next.previousPlan === "force-off") return finish(next, "force-off");
+    if (next.mode === "engine" || (next.mode === "cycle" && next.phase === "engine")) return engineOn(next);
     return leaveHold(next);
   }
   // Electric holds through 22% with Boost. Cycle, and every other mode, still ends Boost at 22%.
@@ -155,14 +178,14 @@ function stepSoc(next) {
       next.lockUntil = null;
       next.mode = "engine";
       next.phase = "engine";
-      return finish(next, "release");
+      return engineOn(next);
     }
     next.phase = "battery";
     return finish(next, "force-off");
   }
   if (next.mode === "engine") {
     next.phase = "engine";
-    return leaveHold(next);
+    return engineOn(next);
   }
   if (next.mode === "cycle") {
     // One point above the floor turns the battery back on. lockUntil is not a gate.
@@ -170,7 +193,7 @@ function stepSoc(next) {
     if (next.phase !== "engine") {
       if (soc <= floor) {
         next.phase = "engine";
-        return leaveHold(next);
+        return engineOn(next);
       }
       next.phase = "battery";
       return finish(next, "force-off");
@@ -179,7 +202,7 @@ function stepSoc(next) {
       next.phase = "battery";
       return finish(next, "force-off");
     }
-    return leaveHold(next);
+    return engineOn(next);
   }
   return leaveHold(next);
 }
@@ -200,11 +223,11 @@ export function stepDrive(state, event) {
     if (next.mode === "engine") {
       next.mode = "off";
       next.phase = "battery";
-    } else {
-      next.mode = "engine";
-      next.phase = "engine";
+      return leaveHold(next);
     }
-    return leaveHold(next);
+    next.mode = "engine";
+    next.phase = "engine";
+    return engineOn(next);
   }
   if (kind === "electric") {
     const keep = next.mode === "electric" && aboveRelease(next.soc, next.boost);
@@ -218,7 +241,7 @@ export function stepDrive(state, event) {
       if (next.phase === "engine") {
         next.mode = "engine";
         next.phase = "engine";
-        return leaveHold(next);
+        return engineOn(next);
       }
       next.mode = "electric";
       next.phase = "battery";
@@ -227,7 +250,7 @@ export function stepDrive(state, event) {
     next.mode = "cycle";
     if (numeric(next.soc) && next.soc <= holdFloor(next.boost)) {
       next.phase = "engine";
-      return leaveHold(next);
+      return engineOn(next);
     }
     next.phase = "battery";
     return finish(next, "force-off");
@@ -273,6 +296,8 @@ export function parseReply(text) {
   if (maf) out.mafGs = decodeMaf(maf[0], maf[1]);
   const soc = bytesAfter(compact, "415B", 1);
   if (soc) out.soc = decodeSoc(soc[0]);
+  const pedal = bytesAfter(compact, "4149", 1);
+  if (pedal) out.pedalPct = decodePedal(pedal[0]);
   const volts = bytesAfter(compact, "622429", 2);
   if (volts) out.voltage = decodeVoltage(volts[0], volts[1]);
   const amps = bytesAfter(compact, "622414", 2);
@@ -285,8 +310,8 @@ export function replySilent(text) {
   if (raw.includes("NO DATA") || raw.includes("UNABLE") || raw.includes("ERROR")) return true;
   const compact = compactHex(raw);
   return compact.includes("7F") && !compact.includes("410C") && !compact.includes("410D")
-    && !compact.includes("415E") && !compact.includes("4110") && !compact.includes("415B")
-    && !compact.includes("622429") && !compact.includes("622414");
+    && !compact.includes("4149") && !compact.includes("415E") && !compact.includes("4110")
+    && !compact.includes("415B") && !compact.includes("622429") && !compact.includes("622414");
 }
 
 export function holdRefused(text) {
@@ -381,7 +406,7 @@ export function releaseCommands() {
   return ["ATSH 7E1", RELEASE];
 }
 
-// Engine mode and Cycle's engine phase are the car's Normal at every charge and every rpm.
+// Engine mode above 22% is the engine-off hold in stepDrive. This plan stays empty.
 // The charge hold is not a plan. A refused hold does not start one.
 export function quietPlan(row) {
   void row;
@@ -444,6 +469,93 @@ export function milesPerHour(speedKmh) {
   return speedKmh * 0.621371;
 }
 
+export const FLOOR_PCT = 95;
+export const FLOOR_HOLD_MS = 10000;
+
+export function emptyFloor() {
+  return {
+    pedalPct: null,
+    pedalKnown: false,
+    prevKmh: null,
+    samples: 0,
+    active: false,
+    t0: 0,
+    held: false,
+    blocked: false,
+  };
+}
+
+function floorDown(row) {
+  return row.pedalKnown === true && typeof row.pedalPct === "number" && row.pedalPct >= FLOOR_PCT;
+}
+
+// Two speed samples during one press. The later one is not higher, and the speed is under 65 mph.
+// A flat speed from before the press does not count. This path never sends the force-on frame.
+export function floorAssist(state, event) {
+  const row = Object.assign(emptyFloor(), state || {});
+  const now = event && typeof event.now === "number" && Number.isFinite(event.now) ? event.now : 0;
+  const type = event && event.type;
+  if (type === "cancel") {
+    row.active = false;
+    row.held = false;
+    row.samples = 0;
+    row.prevKmh = null;
+    return { state: row, plan: "none" };
+  }
+  if (type === "refused") {
+    row.active = false;
+    row.held = false;
+    row.blocked = true;
+    row.samples = 0;
+    row.prevKmh = null;
+    return { state: row, plan: "none" };
+  }
+  if (type === "pedal") {
+    if (typeof event.pedalPct !== "number" || !Number.isFinite(event.pedalPct)) {
+      row.pedalPct = null;
+      row.pedalKnown = false;
+    } else {
+      row.pedalPct = event.pedalPct;
+      row.pedalKnown = true;
+    }
+  }
+  const down = floorDown(row);
+  if (!down) {
+    row.blocked = false;
+    row.samples = 0;
+    row.prevKmh = null;
+    if (row.active) row.held = false;
+  } else if (type === "speed" && typeof event.speedKmh === "number" && Number.isFinite(event.speedKmh)) {
+    const speed = event.speedKmh;
+    const mph = milesPerHour(speed);
+    row.samples += 1;
+    if (row.samples >= 2 && row.prevKmh != null && speed <= row.prevKmh && mph != null && mph < 65 && !row.blocked) {
+      if (!row.active) row.t0 = now;
+      row.active = true;
+      row.held = true;
+    }
+    row.prevKmh = speed;
+  }
+  if (row.active && now >= row.t0 + FLOOR_HOLD_MS && !row.held) row.active = false;
+  return { state: row, plan: row.active ? "engine" : "none" };
+}
+
+// Engine mode's release. Null means the caller keeps the mode plan. Never force-on.
+export function floorBus(plan, holdOn) {
+  if (plan !== "engine") return null;
+  return holdOn ? "release" : "none";
+}
+
+export function floorFace(mode, phase, assist) {
+  const cycle = mode === "cycle";
+  const enginePhase = phase === "engine";
+  return {
+    cycle,
+    electric: !assist && (mode === "electric" || (cycle && !enginePhase)),
+    engine: !!assist || mode === "engine" || (cycle && enginePhase),
+  };
+}
+
 // Rpm 0 may hold the engine off. 1–399 is a start, so the hold lets go.
 // One sample at 400 can be the crank. The next sample at 400 or more may hold again.
 // Speed is not an input.
@@ -491,7 +603,8 @@ export function tripStep(trip, sample) {
     const added = (mph * dt) / 3600;
     miles += added;
     const rpm = row.rpm;
-    if (typeof rpm === "number" && Number.isFinite(rpm) && rpm < 400) electricMiles += added;
+    const engine = row.engine === true;
+    if (!engine && typeof rpm === "number" && Number.isFinite(rpm) && rpm < 400) electricMiles += added;
   }
   return { miles, electricMiles };
 }
