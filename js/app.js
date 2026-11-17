@@ -35,8 +35,9 @@ import {
   emptyFloor,
   floorAssist,
   floorBus,
+  floorCommandsEngine,
   floorFace,
-} from "./protocol.js?v=28";
+} from "./protocol.js?v=29";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -134,8 +135,12 @@ function setText(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
 }
 
+function floorShowing() {
+  return !shotMode && floor.active && floorCommandsEngine(drive.boost, drive.soc);
+}
+
 function paintModes() {
-  const face = floorFace(drive.mode, drive.phase, !shotMode && floor.active);
+  const face = floorFace(drive.mode, drive.phase, floorShowing());
   const holding = drive.mode === "electric";
   const blocked = electricBlocked(drive);
   const cycle = face.cycle;
@@ -318,7 +323,7 @@ function noteTripSample() {
       mph: lastTripMph,
       rpm: lastTripRpm,
       dt: (now - lastTripAt) / 1000,
-      engine: floor.active || lastTripEngine,
+      engine: floorShowing() || lastTripEngine,
     });
     const changed = next.miles !== trip.miles || next.electricMiles !== trip.electricMiles;
     trip = next;
@@ -327,7 +332,7 @@ function noteTripSample() {
   lastTripAt = now;
   lastTripMph = mph;
   lastTripRpm = Number.isFinite(state.rpm) ? state.rpm : null;
-  lastTripEngine = floor.active;
+  lastTripEngine = floorShowing();
 }
 
 function persistDrive() {
@@ -380,17 +385,12 @@ function syncFloor(event) {
   return stepped.plan;
 }
 
-function holdOnBus() {
-  return busKind === "off" || asserted;
-}
-
 function driveEnact(plan) {
-  const bus = floorBus(floor.active ? "engine" : "none", holdOnBus());
-  if (bus === "release") {
-    enact("release");
+  const bus = floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc);
+  if (bus === "force-on") {
+    enact("force-on");
     return;
   }
-  if (bus === "none") return;
   enact(plan);
 }
 

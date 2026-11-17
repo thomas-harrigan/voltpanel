@@ -42,6 +42,7 @@ import {
   emptyFloor,
   floorAssist,
   floorBus,
+  floorCommandsEngine,
   floorFace,
   decodePedal,
 } from "../js/protocol.js";
@@ -475,7 +476,7 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=28"), true);
+  assert.equal(app.includes("protocol.js?v=29"), true);
   assert.equal(app.includes("01 49"), true);
   assert.equal(app.includes("floorBus"), true);
   assert.equal(src.includes("floorBus"), true);
@@ -763,18 +764,25 @@ test("empty floor and one speed sample do not start the engine", () => {
   const once = floorAssist(down, { type: "speed", speedKmh: 40, now: 1000 });
   assert.equal(once.plan, "none");
   assert.equal(once.state.samples, 1);
-  assert.equal(floorBus(once.plan, true), null);
+  assert.equal(floorBus(once.plan, false, 50), null);
 });
 
-test("a flat press under 65 releases an engine-off hold and never force-on", () => {
+test("a flat press under 65 sends the same engine-on frame as 45% charge", () => {
   let state = floorDown(emptyFloor(), 100);
   state = floorAssist(state, { type: "speed", speedKmh: 64, now: 1000 }).state;
   const stuck = floorAssist(state, { type: "speed", speedKmh: 64, now: 2500 });
   assert.equal(stuck.plan, "engine");
   assert.equal(stuck.state.active, true);
-  assert.equal(floorBus(stuck.plan, true), "release");
-  assert.equal(floorBus(stuck.plan, false), "none");
-  assert.notEqual(floorBus(stuck.plan, true), "force-on");
+  assert.equal(floorBus(stuck.plan, false, 50), "force-on");
+  assert.equal(floorBus(stuck.plan, false, 10), "force-on");
+  assert.equal(floorBus(stuck.plan, false, null), "force-on");
+  assert.equal(floorCommandsEngine(true, 22.1), false);
+  assert.equal(floorBus(stuck.plan, true, 30), null);
+  assert.equal(floorBus(stuck.plan, true, null), null);
+  assert.equal(floorCommandsEngine(true, 22), true);
+  assert.equal(floorBus(stuck.plan, true, 22), "force-on");
+  assert.equal(floorBus(stuck.plan, true, 21), "force-on");
+  assert.equal(floorBus("none", true, 10), null);
   assert.equal(floorFace("electric", "battery", true).engine, true);
   assert.equal(floorFace("electric", "battery", true).electric, false);
   assert.equal(floorFace("electric", "battery", false).engine, false);

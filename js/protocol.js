@@ -490,7 +490,7 @@ function floorDown(row) {
 }
 
 // Two speed samples during one press. The later one is not higher, and the speed is under 65 mph.
-// A flat speed from before the press does not count. This path never sends the force-on frame.
+// A flat speed from before the press does not count. The stretch then sends Engine On.
 export function floorAssist(state, event) {
   const row = Object.assign(emptyFloor(), state || {});
   const now = event && typeof event.now === "number" && Number.isFinite(event.now) ? event.now : 0;
@@ -540,10 +540,17 @@ export function floorAssist(state, event) {
   return { state: row, plan: row.active ? "engine" : "none" };
 }
 
-// Engine mode's release. Null means the caller keeps the mode plan. Never force-on.
-export function floorBus(plan, holdOn) {
+// Battery Boost keeps the mode already on the bus until the pack is at 22% or below.
+// Any other flat floor sends the same Engine On frame Engine mode sends at 45%.
+export function floorCommandsEngine(boost, soc) {
+  if (!boost) return true;
+  return numeric(soc) && soc <= 22;
+}
+
+export function floorBus(plan, boost, soc) {
   if (plan !== "engine") return null;
-  return holdOn ? "release" : "none";
+  if (!floorCommandsEngine(boost, soc)) return null;
+  return "force-on";
 }
 
 export function floorFace(mode, phase, assist) {
