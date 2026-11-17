@@ -37,7 +37,7 @@ import {
   floorBus,
   floorCommandsEngine,
   floorFace,
-} from "./protocol.js?v=29";
+} from "./protocol.js?v=30";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -388,7 +388,7 @@ function syncFloor(event) {
 function driveEnact(plan) {
   const bus = floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc);
   if (bus === "force-on") {
-    enact("force-on");
+    enact("force-on", true);
     return;
   }
   enact(plan);
@@ -426,9 +426,9 @@ function considerHold(forceNow) {
   for (const cmd of holdCommands().commands) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "hold");
 }
 
-function enact(plan) {
+function enact(plan, fromFloor) {
   if (plan === "force-on") {
-    drive.previousPlan = "force-on";
+    if (!fromFloor) drive.previousPlan = "force-on";
     considerOn(busKind !== "on");
     return;
   }

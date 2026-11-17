@@ -476,7 +476,9 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=29"), true);
+  assert.equal(app.includes("protocol.js?v=30"), true);
+  assert.equal(app.includes('enact("force-on", true)'), true);
+  assert.equal(app.includes('if (!fromFloor) drive.previousPlan = "force-on"'), true);
   assert.equal(app.includes("01 49"), true);
   assert.equal(app.includes("floorBus"), true);
   assert.equal(src.includes("floorBus"), true);
@@ -783,6 +785,11 @@ test("a flat press under 65 sends the same engine-on frame as 45% charge", () =>
   assert.equal(floorBus(stuck.plan, true, 22), "force-on");
   assert.equal(floorBus(stuck.plan, true, 21), "force-on");
   assert.equal(floorBus("none", true, 10), null);
+  const plain = stepDrive(drive({ mode: "engine", phase: "engine", soc: 50, previousPlan: "none" }), { type: "soc", soc: 50 });
+  assert.equal(plain.plan, "none");
+  assert.equal(plain.state.previousPlan, "none");
+  const bandExit = stepDrive(drive({ mode: "engine", phase: "engine", soc: 50, previousPlan: "force-on" }), { type: "soc", soc: 50 });
+  assert.equal(bandExit.plan, "force-off");
   assert.equal(floorFace("electric", "battery", true).engine, true);
   assert.equal(floorFace("electric", "battery", true).electric, false);
   assert.equal(floorFace("electric", "battery", false).engine, false);
