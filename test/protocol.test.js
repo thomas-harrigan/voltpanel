@@ -476,7 +476,7 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=30"), true);
+  assert.equal(app.includes("protocol.js?v=31"), true);
   assert.equal(app.includes('enact("force-on", true)'), true);
   assert.equal(app.includes('if (!fromFloor) drive.previousPlan = "force-on"'), true);
   assert.equal(app.includes("01 49"), true);
@@ -800,18 +800,31 @@ test("a flat press under 65 sends the same engine-on frame as 45% charge", () =>
   assert.equal(still.plan, "none");
 });
 
-test("rising speed stays off, then a flat sample turns the engine stretch on", () => {
-  let state = floorDown(emptyFloor(), 100);
-  state = floorAssist(state, { type: "speed", speedKmh: 0, now: 0 }).state;
-  state = floorAssist(state, { type: "speed", speedKmh: 15, now: 1000 }).state;
-  assert.equal(state.active, false);
-  state = floorAssist(state, { type: "speed", speedKmh: 30, now: 2000 }).state;
-  assert.equal(state.active, false);
-  const flat = floorAssist(state, { type: "speed", speedKmh: 30, now: 3000 });
-  assert.equal(flat.plan, "engine");
-  const quicker = floorAssist(flat.state, { type: "speed", speedKmh: 40, now: 4000 });
-  assert.equal(quicker.state.active, true);
-  assert.equal(quicker.state.t0, 3000);
+test("a floored pedal under 65 turns the engine on only behind the 11-second curve", () => {
+  const kmh = (mph) => mph / 0.621371;
+  const run = (prevMph, actualMph, dt = 1000) => {
+    let state = floorDown(emptyFloor(), 100);
+    state = floorAssist(state, { type: "speed", speedKmh: kmh(prevMph), now: 0 }).state;
+    return floorAssist(state, { type: "speed", speedKmh: kmh(actualMph), now: dt });
+  };
+  assert.equal(run(0, 18.09).plan, "none");
+  const short = run(0, 18.08);
+  assert.equal(short.plan, "engine");
+  assert.equal(floorBus(short.plan, false, 50), "force-on");
+  assert.equal(run(0, 5.45).plan, "engine");
+  assert.equal(run(50, 53.17).plan, "none");
+  assert.equal(run(50, 53.16).plan, "engine");
+  assert.equal(run(65, 65).plan, "none");
+  assert.equal(run(64.9, 64.9).plan, "engine");
+  assert.equal(run(0, 0, 4001).plan, "none");
+  assert.equal(FORCE_ON, "AE 31 06 00 00 00 00");
+  const behind = run(0, 5.45);
+  const beat = floorAssist(behind.state, { type: "speed", speedKmh: kmh(40), now: 2000 });
+  assert.equal(beat.plan, "engine");
+  assert.equal(beat.state.active, true);
+  assert.equal(beat.state.t0, 1000);
+  assert.equal(floorBus("engine", true, 30), null);
+  assert.equal(floorBus("engine", true, 22), "force-on");
 });
 
 test("the stretch is 10 seconds or the press, whichever is longer", () => {

@@ -37,7 +37,7 @@ import {
   floorBus,
   floorCommandsEngine,
   floorFace,
-} from "./protocol.js?v=30";
+} from "./protocol.js?v=31";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);

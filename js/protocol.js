@@ -477,6 +477,7 @@ export function emptyFloor() {
     pedalPct: null,
     pedalKnown: false,
     prevKmh: null,
+    prevAt: null,
     samples: 0,
     active: false,
     t0: 0,
@@ -489,8 +490,8 @@ function floorDown(row) {
   return row.pedalKnown === true && typeof row.pedalPct === "number" && row.pedalPct >= FLOOR_PCT;
 }
 
-// Two speed samples during one press. The later one is not higher, and the speed is under 65 mph.
-// A flat speed from before the press does not count. The stretch then sends Engine On.
+// Constant power, not a straight line: 60 mph lands at 11.0 s, so expected speed is sqrt(prev² + 2kt) with k = 60² / (2×11), and that shape runs through 65 mph.
+// A floored pedal turns the engine on only when the next speed, in hundredths of a mile per hour, is under that curve.
 export function floorAssist(state, event) {
   const row = Object.assign(emptyFloor(), state || {});
   const now = event && typeof event.now === "number" && Number.isFinite(event.now) ? event.now : 0;
@@ -500,6 +501,7 @@ export function floorAssist(state, event) {
     row.held = false;
     row.samples = 0;
     row.prevKmh = null;
+    row.prevAt = null;
     return { state: row, plan: "none" };
   }
   if (type === "refused") {
@@ -508,6 +510,7 @@ export function floorAssist(state, event) {
     row.blocked = true;
     row.samples = 0;
     row.prevKmh = null;
+    row.prevAt = null;
     return { state: row, plan: "none" };
   }
   if (type === "pedal") {
@@ -524,23 +527,34 @@ export function floorAssist(state, event) {
     row.blocked = false;
     row.samples = 0;
     row.prevKmh = null;
+    row.prevAt = null;
     if (row.active) row.held = false;
   } else if (type === "speed" && typeof event.speedKmh === "number" && Number.isFinite(event.speedKmh)) {
     const speed = event.speedKmh;
     const mph = milesPerHour(speed);
+    const prevMph = milesPerHour(row.prevKmh);
+    const prevAt = row.prevAt;
     row.samples += 1;
-    if (row.samples >= 2 && row.prevKmh != null && speed <= row.prevKmh && mph != null && mph < 65 && !row.blocked) {
-      if (!row.active) row.t0 = now;
-      row.active = true;
-      row.held = true;
+    if (prevMph != null && typeof prevAt === "number" && Number.isFinite(prevAt) && mph != null && !row.blocked) {
+      const dtSeconds = (now - prevAt) / 1000;
+      if (dtSeconds > 0 && dtSeconds <= 4 && prevMph < 65) {
+        const k = (60 * 60) / (2 * 11);
+        const expectedMph = Math.sqrt((prevMph * prevMph) + (2 * k * dtSeconds));
+        if (Math.round(mph * 100) < Math.round(expectedMph * 100)) {
+          if (!row.active) row.t0 = now;
+          row.active = true;
+          row.held = true;
+        }
+      }
     }
     row.prevKmh = speed;
+    row.prevAt = now;
   }
   if (row.active && now >= row.t0 + FLOOR_HOLD_MS && !row.held) row.active = false;
   return { state: row, plan: row.active ? "engine" : "none" };
 }
 
-// Battery Boost keeps the mode already on the bus until the pack is at 22% or below.
+// Battery Reserve keeps the mode already on the bus until the pack is at 22% or below.
 // Any other flat floor sends the same Engine On frame Engine mode sends at 45%.
 export function floorCommandsEngine(boost, soc) {
   if (!boost) return true;

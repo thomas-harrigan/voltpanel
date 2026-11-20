@@ -43,7 +43,7 @@ test("battery is 0 to 100 and the old voltage label is gone", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.equal(html.includes("Engine Mode"), true);
   assert.equal(html.includes("Cycle Mode"), true);
-  assert.equal(html.includes("Battery Boost"), true);
+  assert.equal(html.includes("Battery Reserve"), true);
   assert.equal(html.includes(">Battery<"), true);
   assert.equal(html.includes(">Voltage<"), false);
   assert.equal(html.includes("MPGe"), false);
@@ -138,7 +138,7 @@ test("modes and gauges stay in face order", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const modes = html.slice(html.indexOf('class="modes"'), html.indexOf('class="grid"'));
   const modeNames = [...modes.matchAll(/aria-label="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(modeNames, ["Cycle Mode", "Electric Mode", "Engine Mode", "Battery Boost"]);
+  assert.deepEqual(modeNames, ["Cycle Mode", "Electric Mode", "Engine Mode", "Battery Reserve"]);
   const grid = html.slice(html.indexOf('class="grid"'), html.indexOf('class="bar"'));
   const labels = [...grid.matchAll(/class="label[^"]*"[^>]*>([\s\S]*?)<\/div>/g)].map((match) =>
     match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
