@@ -41,7 +41,7 @@ import {
   pollTick,
   commitWrite,
   FLOOR_PCT,
-} from "./protocol.js?v=33";
+} from "./protocol.js?v=34";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -94,7 +94,6 @@ let lastOn = 0;
 let proofRpm = null;
 let previousRpm = null;
 let rpmMisses = 0;
-let pollTimer = 0;
 let holdPoll = false;
 let trip = clearedTrip();
 let lastTripAt = 0;
@@ -682,7 +681,6 @@ function onLinkDrop(next) {
   clearProof();
   resetLinkGate();
   linkGen += 1;
-  clearInterval(pollTimer);
   clearQueue();
   probing = false;
   if (notifyChar) notifyChar.removeEventListener("characteristicvaluechanged", onNotify);
@@ -726,6 +724,14 @@ function enqueuePid(head, cmd, tag) {
   pump();
 }
 
+function queueNextRead() {
+  if (holdPoll || !writeChar || queue.length) return;
+  const floored = floor.pedalKnown === true && typeof floor.pedalPct === "number" && floor.pedalPct >= FLOOR_PCT;
+  const step = pollTick(poll, pollIndex, { floored, askFuel, askPedal });
+  pollIndex = step.index;
+  for (const job of step.jobs) queue.push({ cmd: job[1], tag: job[2], head: job[0], timeout: 1200 });
+}
+
 async function pump() {
   if (busy || probing || !queue.length || !writeChar) return;
   busy = true;
@@ -748,7 +754,9 @@ async function pump() {
   }
   onReply(job, text, timedOut);
   busy = false;
-  setTimeout(pump, 200);
+  if (probing || !writeChar) return;
+  if (!queue.length) queueNextRead();
+  if (queue.length) setTimeout(pump, 0);
 }
 
 function clearQueue() {
@@ -844,7 +852,6 @@ async function openSession() {
   floor = emptyFloor();
   lastTripEngine = false;
   header = "";
-  clearInterval(pollTimer);
   clearQueue();
   probing = true;
   notifyChar.removeEventListener("characteristicvaluechanged", onNotify);
@@ -968,19 +975,13 @@ function onReply(job, text, timedOut) {
 }
 
 function startPoll() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(() => {
-    if (holdPoll || !writeChar || queue.length > 4) return;
-    const floored = floor.pedalKnown === true && typeof floor.pedalPct === "number" && floor.pedalPct >= FLOOR_PCT;
-    const step = pollTick(poll, pollIndex, { floored, askFuel, askPedal });
-    pollIndex = step.index;
-    for (const job of step.jobs) enqueuePid(job[0], job[1], job[2]);
-  }, 200);
+  if (holdPoll || probing || !writeChar) return;
+  if (!queue.length) queueNextRead();
+  if (!busy && queue.length) setTimeout(pump, 0);
 }
 
 async function attach(next) {
   const generation = linkGen;
-  clearInterval(pollTimer);
   clearQueue();
   const server = await next.gatt.connect();
   let write = null;
@@ -1059,7 +1060,6 @@ function disconnect() {
   retryCount = 0;
   statusError = "";
   linkGen += 1;
-  clearInterval(pollTimer);
   clearQueue();
   probing = false;
   if (notifyChar) notifyChar.removeEventListener("characteristicvaluechanged", onNotify);
@@ -1094,10 +1094,16 @@ function scheduleCodes(mine, job) {
     try {
       await job();
     } finally {
-      if (mine === codesGen) holdPoll = false;
+      if (mine === codesGen) {
+        holdPoll = false;
+        startPoll();
+      }
     }
   }).catch(() => {
-    if (mine === codesGen) holdPoll = false;
+    if (mine === codesGen) {
+      holdPoll = false;
+      startPoll();
+    }
   });
 }
 
@@ -1230,6 +1236,7 @@ function closeCodes() {
   holdPoll = false;
   $("codes").hidden = true;
   paintLive();
+  startPoll();
 }
 
 function onClearCodes() {

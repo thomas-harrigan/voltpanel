@@ -114,6 +114,7 @@ function cloneDrive(state) {
     soc: numeric(row.soc) ? row.soc : null,
     lockUntil: numeric(row.lockUntil) ? row.lockUntil : null,
     previousPlan: previous === "force-off" || previous === "force-on" || previous === "release" ? previous : "none",
+    highRun: numeric(row.highRun) && row.highRun > 0 ? row.highRun : 0,
   };
 }
 
@@ -143,6 +144,7 @@ function endBoost(next) {
   next.lockUntil = null;
   next.mode = "cycle";
   next.phase = "engine";
+  next.highRun = 0;
   return engineOn(next);
 }
 
@@ -182,9 +184,10 @@ function stepSoc(next) {
     return engineOn(next);
   }
   if (next.mode === "cycle") {
-    // One point above the floor turns the battery back on. lockUntil is not a gate.
+    // Two samples at or above 46 turn the battery back on. One keeps engine-on. Below 46 clears the run.
     const backOn = floor + 1;
     if (next.phase !== "engine") {
+      next.highRun = 0;
       if (soc <= floor) {
         next.phase = "engine";
         return engineOn(next);
@@ -192,6 +195,14 @@ function stepSoc(next) {
       next.phase = "battery";
       return finish(next, "force-off");
     }
+    if (!next.boost && soc >= backOn) {
+      next.highRun += 1;
+      if (next.highRun < 2) return engineOn(next);
+      next.highRun = 0;
+      next.phase = "battery";
+      return finish(next, "force-off");
+    }
+    next.highRun = 0;
     if (soc >= backOn) {
       next.phase = "battery";
       return finish(next, "force-off");
@@ -242,6 +253,7 @@ export function stepDrive(state, event) {
       return finish(next, "force-off");
     }
     next.mode = "cycle";
+    next.highRun = 0;
     if (numeric(next.soc) && next.soc <= holdFloor(next.boost)) {
       next.phase = "engine";
       return engineOn(next);
