@@ -40,8 +40,9 @@ import {
   unusedPack,
   pollTick,
   commitWrite,
+  freshCharge,
   FLOOR_PCT,
-} from "./protocol.js?v=34";
+} from "./protocol.js?v=35";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -924,7 +925,6 @@ function onReply(job, text, timedOut) {
     proofRpm = parsed.rpm;
   }
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
-  const wasActive = floor.active;
   const nowMs = Date.now();
   if (job.tag === "pedal" && !timedOut && parsed.pedalPct != null) {
     syncFloor({ type: "pedal", pedalPct: parsed.pedalPct, now: nowMs });
@@ -962,11 +962,9 @@ function onReply(job, text, timedOut) {
   if (parsed.current != null) state.current = parsed.current;
   if (state.voltage != null && state.current != null) state.kw = kilowatts(state.voltage, state.current);
   if (parsed.rpm != null || parsed.voltage != null || parsed.speedKmh != null) state.live = true;
-  if (parsed.soc != null) {
+  if (freshCharge(parsed.soc)) {
     state.soc = parsed.soc;
     noteCharge(parsed.soc);
-  }
-  if (parsed.soc != null || (wasActive && !floor.active)) {
     applyDrive({ type: "soc", soc: state.soc });
   } else {
     driveEnact(finalPlan(keptPlan()));

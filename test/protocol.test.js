@@ -44,6 +44,7 @@ import {
   floorBus,
   floorCommandsEngine,
   floorFace,
+  freshCharge,
   decodePedal,
   linkCommand,
   unusedPack,
@@ -329,6 +330,28 @@ test("one sample at 46 stays force-on until the next sample at 46", () => {
   assert.equal(again.plan, "force-on");
 });
 
+test("a stretch end does not replay the last charge", () => {
+  const once = stepDrive(drive({ mode: "cycle", phase: "engine", soc: 45, previousPlan: "force-on" }), { type: "soc", soc: 46 });
+  assert.equal(once.state.phase, "engine");
+  assert.equal(once.plan, "force-on");
+  const twice = stepDrive(once.state, { type: "soc", soc: 46 });
+  assert.equal(twice.state.phase, "battery");
+  assert.equal(twice.plan, "force-off");
+  assert.equal(freshCharge(46), true);
+  assert.equal(freshCharge(0), true);
+  assert.equal(freshCharge(null), false);
+  assert.equal(freshCharge(undefined), false);
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  const reply = app.slice(app.indexOf("const parsed = timedOut"), app.indexOf("function startPoll"));
+  assert.equal(reply.includes("freshCharge(parsed.soc)"), true);
+  assert.equal(reply.includes("wasActive && !floor.active"), false);
+  assert.equal(reply.includes("applyDrive({ type: \"soc\", soc: state.soc })"), true);
+  const fresh = reply.slice(reply.indexOf("if (freshCharge(parsed.soc))"), reply.indexOf("paintLive();"));
+  assert.equal(fresh.includes("applyDrive"), true);
+  assert.equal(fresh.includes("driveEnact(finalPlan(keptPlan()))"), true);
+  assert.equal(fresh.indexOf("applyDrive"), fresh.lastIndexOf("applyDrive"));
+});
+
 test("boost on while engine is showing selects electric", () => {
   const fromEngine = stepDrive(drive({ mode: "engine", phase: "engine", soc: 30 }), { type: "boost" });
   assert.equal(fromEngine.state.mode, "electric");
@@ -526,7 +549,7 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=34"), true);
+  assert.equal(app.includes("protocol.js?v=35"), true);
   assert.equal(app.includes('enact("force-on", true)'), true);
   assert.equal(app.includes('if (!fromFloor) drive.previousPlan = "force-on"'), true);
   assert.equal(app.includes("01 49"), true);
@@ -1111,9 +1134,9 @@ test("background listeners do not drop the hold", () => {
   assert.equal(app.includes("setTimeout(pump, 0)"), true);
   assert.equal(app.includes("now - lastOn < 2000"), true);
   assert.equal(app.includes("now - lastHold < 2000"), true);
-  assert.equal(sw.includes("voltpanel-41"), true);
-  assert.equal(sw.includes("/js/app.js?v=35"), true);
-  assert.equal(sw.includes("/js/protocol.js?v=34"), true);
+  assert.equal(sw.includes("voltpanel-42"), true);
+  assert.equal(sw.includes("/js/app.js?v=36"), true);
+  assert.equal(sw.includes("/js/protocol.js?v=35"), true);
   assert.equal(sw.includes("/icon.png?v=1"), true);
   assert.equal(sw.includes("/icon.svg"), false);
 });

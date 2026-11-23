@@ -86,6 +86,10 @@ function numeric(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+export function freshCharge(parsedSoc) {
+  return numeric(parsedSoc);
+}
+
 // A new Electric press needs 46%, or 22% with Boost. No charge reading stays pressable.
 // lockUntil is not a gate.
 export function electricBlocked(state) {
