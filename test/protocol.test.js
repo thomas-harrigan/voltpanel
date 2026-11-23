@@ -45,6 +45,8 @@ import {
   floorCommandsEngine,
   floorFace,
   decodePedal,
+  linkCommand,
+  unusedPack,
 } from "../js/protocol.js";
 
 function drive(partial) {
@@ -112,7 +114,8 @@ test("boost off, Electric hold polled at 45 turns the engine on, and 46 turns it
   const held = stepDrive(started.state, { type: "soc", soc: 45.5 });
   assert.equal(held.plan, "force-on");
   const stopped = stepDrive(held.state, { type: "soc", soc: 46 });
-  assert.equal(stopped.plan, "force-off");
+  assert.equal(stopped.state.mode, "engine");
+  assert.equal(stopped.plan, "force-on");
   const again = stepDrive(started.state, { type: "electric" });
   assert.equal(again.state.mode, "engine");
   assert.equal(again.plan, "none");
@@ -124,7 +127,7 @@ test("boost off, Electric hold polled at 45 turns the engine on, and 46 turns it
   const pressed = stepDrive(drive({ mode: "electric", phase: "battery", soc: 45, previousPlan: "force-off" }), { type: "engine" });
   assert.equal(pressed.plan, "force-on");
   const low = stepDrive(drive({ mode: "engine", phase: "engine", soc: 40, previousPlan: "none" }), { type: "soc", soc: 40 });
-  assert.notEqual(low.plan, "force-on");
+  assert.equal(low.plan, "force-on");
 });
 
 test("a stale lockUntil of 47 does not block a press at soc 46", () => {
@@ -168,7 +171,7 @@ test("boost on, Electric at 21.9 ends Boost and soc 46 returns to battery force-
   assert.equal(dropped.state.boost, false);
   assert.equal(dropped.state.mode, "cycle");
   assert.equal(dropped.state.phase, "engine");
-  assert.equal(dropped.plan, "release");
+  assert.equal(dropped.plan, "force-on");
   assert.equal(dropped.state.lockUntil, null);
   const back = stepDrive(dropped.state, { type: "soc", soc: 46 });
   assert.equal(back.state.mode, "cycle");
@@ -187,11 +190,11 @@ test("electric at 21.5 with boost on turns boost off and charges toward 46", () 
   assert.equal(result.state.mode, "cycle");
   assert.equal(result.state.phase, "engine");
   assert.equal(result.state.lockUntil, null);
-  assert.equal(result.plan, "release");
+  assert.equal(result.plan, "force-on");
   const charging = stepDrive(result.state, { type: "soc", soc: 30 });
   assert.equal(charging.state.phase, "engine");
   assert.equal(charging.state.mode, "cycle");
-  assert.equal(charging.plan, "none");
+  assert.equal(charging.plan, "force-on");
   const back = stepDrive(charging.state, { type: "soc", soc: 46 });
   assert.equal(back.state.phase, "battery");
   assert.equal(back.plan, "force-off");
@@ -230,7 +233,7 @@ test("manual engine does not set a lock, and the two modes clear each other", ()
   assert.equal(manual.state.lockUntil, null);
   const cleared = stepDrive(drive({ mode: "electric", phase: "battery", soc: 50, previousPlan: "force-off" }), { type: "engine" });
   assert.equal(cleared.state.mode, "engine");
-  assert.equal(cleared.plan, "release");
+  assert.equal(cleared.plan, "force-on");
   const back = stepDrive(drive({ mode: "engine", phase: "engine", soc: 50 }), { type: "electric" });
   assert.equal(back.state.mode, "electric");
   assert.equal(back.state.phase, "battery");
@@ -275,10 +278,10 @@ test("cycle with boost on turns boost off at 22 and returns at 46", () => {
   assert.equal(result.state.phase, "engine");
   assert.equal(result.state.mode, "cycle");
   assert.equal(result.state.lockUntil, null);
-  assert.equal(result.plan, "release");
+  assert.equal(result.plan, "force-on");
   result = stepDrive(result.state, { type: "soc", soc: 23 });
   assert.equal(result.state.phase, "engine");
-  assert.equal(result.plan, "none");
+  assert.equal(result.plan, "force-on");
   result = stepDrive(result.state, { type: "soc", soc: 46 });
   assert.equal(result.state.phase, "battery");
   assert.equal(result.plan, "force-off");
@@ -436,13 +439,13 @@ test("cycle under the floor does not release unless a hold was on", () => {
   const locked = stepDrive(drive({ mode: "off", soc: 25, lockUntil: 26, previousPlan: "none" }), { type: "cycle" });
   assert.equal(locked.state.mode, "cycle");
   assert.equal(locked.state.phase, "engine");
-  assert.equal(locked.plan, "none");
+  assert.equal(locked.plan, "force-on");
   const fromEngine = stepDrive(drive({ mode: "engine", soc: 20, previousPlan: "none" }), { type: "cycle" });
-  assert.equal(fromEngine.plan, "none");
+  assert.equal(fromEngine.plan, "force-on");
   const held = stepDrive(drive({ mode: "electric", phase: "battery", soc: 20, previousPlan: "force-off" }), { type: "cycle" });
   assert.equal(held.state.mode, "cycle");
   assert.equal(held.state.phase, "engine");
-  assert.equal(held.plan, "release");
+  assert.equal(held.plan, "force-on");
 });
 
 test("cycle during the lock does not enter the battery phase", () => {
@@ -476,7 +479,7 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=31"), true);
+  assert.equal(app.includes("protocol.js?v=32"), true);
   assert.equal(app.includes('enact("force-on", true)'), true);
   assert.equal(app.includes('if (!fromFloor) drive.previousPlan = "force-on"'), true);
   assert.equal(app.includes("01 49"), true);
@@ -543,8 +546,12 @@ test("engine mode in the 45% band sends the engine-on command and quietPlan does
   assert.equal(stopped.commands.includes(FORCE_ON), false);
   assert.equal(quietPlan({ mode: "engine", phase: "engine", forceOnOk: false, rpm: 4000, soc: 50 }), "none");
   const refused = stepDrive(drive({ mode: "electric", phase: "battery", soc: 40, previousPlan: "force-off" }), { type: "refuse" });
-  assert.equal(refused.plan, "release");
-  assert.notEqual(refused.plan, "force-on");
+  assert.equal(refused.state.mode, "electric");
+  assert.equal(refused.plan, "force-on");
+  assert.notEqual(refused.plan, "release");
+  const quiet = stepDrive(drive({ mode: "off", previousPlan: "force-off" }), { type: "refuse" });
+  assert.equal(quiet.state.mode, "off");
+  assert.equal(quiet.plan, "release");
 });
 
 test("attach sends no module frame for any mode", () => {
@@ -740,7 +747,8 @@ test("hold gate is stopped, a start, or two running samples", () => {
   assert.equal(hold.includes("holdGate(previousRpm, proofRpm)"), true);
   assert.equal(hold.includes("engineKnown"), false);
   assert.equal(hold.includes("speed"), false);
-  assert.equal(hold.includes('enact("release")'), true);
+  assert.equal(hold.includes('enact("release")'), false);
+  assert.equal(hold.includes("considerOn"), true);
   assert.equal(app.includes("previousRpm = proofRpm"), true);
   const cleared = app.slice(app.indexOf("function clearProof"), app.indexOf("function onLinkDrop"));
   assert.equal(cleared.includes("previousRpm = null"), true);
@@ -786,10 +794,10 @@ test("a flat press under 65 sends the same engine-on frame as 45% charge", () =>
   assert.equal(floorBus(stuck.plan, true, 21), "force-on");
   assert.equal(floorBus("none", true, 10), null);
   const plain = stepDrive(drive({ mode: "engine", phase: "engine", soc: 50, previousPlan: "none" }), { type: "soc", soc: 50 });
-  assert.equal(plain.plan, "none");
-  assert.equal(plain.state.previousPlan, "none");
+  assert.equal(plain.plan, "force-on");
+  assert.equal(plain.state.previousPlan, "force-on");
   const bandExit = stepDrive(drive({ mode: "engine", phase: "engine", soc: 50, previousPlan: "force-on" }), { type: "soc", soc: 50 });
-  assert.equal(bandExit.plan, "force-off");
+  assert.equal(bandExit.plan, "force-on");
   assert.equal(floorFace("electric", "battery", true).engine, true);
   assert.equal(floorFace("electric", "battery", true).electric, false);
   assert.equal(floorFace("electric", "battery", false).engine, false);
@@ -800,31 +808,27 @@ test("a flat press under 65 sends the same engine-on frame as 45% charge", () =>
   assert.equal(still.plan, "none");
 });
 
-test("a floored pedal under 65 turns the engine on only behind the 11-second curve", () => {
+test("a 40 percent pedal and a slow gain arms the stretch", () => {
   const kmh = (mph) => mph / 0.621371;
-  const run = (prevMph, actualMph, dt = 1000) => {
-    let state = floorDown(emptyFloor(), 100);
+  const run = (pedal, prevMph, actualMph, dt = 1000) => {
+    let state = floorDown(emptyFloor(), pedal);
     state = floorAssist(state, { type: "speed", speedKmh: kmh(prevMph), now: 0 }).state;
     return floorAssist(state, { type: "speed", speedKmh: kmh(actualMph), now: dt });
   };
-  assert.equal(run(0, 18.09).plan, "none");
-  const short = run(0, 18.08);
-  assert.equal(short.plan, "engine");
-  assert.equal(floorBus(short.plan, false, 50), "force-on");
-  assert.equal(run(0, 5.45).plan, "engine");
-  assert.equal(run(50, 53.17).plan, "none");
-  assert.equal(run(50, 53.16).plan, "engine");
-  assert.equal(run(65, 65).plan, "none");
-  assert.equal(run(64.9, 64.9).plan, "engine");
-  assert.equal(run(0, 0, 4001).plan, "none");
+  const armed = run(40, 30, 30.5);
+  assert.equal(armed.plan, "engine");
+  assert.equal(armed.state.samples > 1, true);
+  assert.equal(floorBus(armed.plan, false, 50), "force-on");
+  assert.equal(floorBus(armed.plan, true, 30), null);
+  assert.equal(floorBus(armed.plan, true, 22), "force-on");
+  assert.equal(run(20, 30, 30.2).plan, "none");
+  assert.equal(run(40, 30, 30.2, 5000).plan, "none");
+  assert.equal(run(40, 70, 70).plan, "none");
+  assert.equal(run(40, 30, 32).plan, "none");
+  const faster = floorAssist(armed.state, { type: "speed", speedKmh: kmh(40), now: 2000 });
+  assert.equal(faster.plan, "engine");
+  assert.equal(faster.state.active, true);
   assert.equal(FORCE_ON, "AE 31 06 00 00 00 00");
-  const behind = run(0, 5.45);
-  const beat = floorAssist(behind.state, { type: "speed", speedKmh: kmh(40), now: 2000 });
-  assert.equal(beat.plan, "engine");
-  assert.equal(beat.state.active, true);
-  assert.equal(beat.state.t0, 1000);
-  assert.equal(floorBus("engine", true, 30), null);
-  assert.equal(floorBus("engine", true, 22), "force-on");
 });
 
 test("the stretch is 10 seconds or the press, whichever is longer", () => {
@@ -859,6 +863,132 @@ test("a refused pedal or no pedal does not start the stretch", () => {
   next = floorAssist(next, { type: "speed", speedKmh: 20, now: 4000 }).state;
   assert.equal(floorAssist(next, { type: "speed", speedKmh: 20, now: 5000 }).plan, "engine");
   assert.equal(floorAssist(live, { type: "cancel", now: 1600 }).plan, "none");
+});
+
+test("engine mode plans force-on at 10, 45, and 50", () => {
+  for (const soc of [10, 45, 50]) {
+    const result = stepDrive(drive({ mode: "engine", phase: "engine", soc, previousPlan: "none" }), { type: "soc", soc });
+    assert.equal(result.state.mode, "engine");
+    assert.equal(result.plan, "force-on");
+  }
+  const empty = stepDrive(drive({ mode: "engine", phase: "engine", soc: null, previousPlan: "none" }), { type: "soc", soc: null });
+  assert.equal(empty.plan, "force-on");
+  const above = stepDrive(drive({ mode: "engine", phase: "engine", soc: 80, previousPlan: "force-on" }), { type: "soc", soc: 80 });
+  assert.equal(above.plan, "force-on");
+});
+
+test("cycle plans force-on at 40 and 44 and force-off at 46", () => {
+  let result = stepDrive(drive({ soc: 60 }), { type: "cycle" });
+  result = stepDrive(result.state, { type: "soc", soc: 40 });
+  assert.equal(result.state.mode, "cycle");
+  assert.equal(result.state.phase, "engine");
+  assert.equal(result.plan, "force-on");
+  result = stepDrive(result.state, { type: "soc", soc: 44 });
+  assert.equal(result.state.phase, "engine");
+  assert.equal(result.plan, "force-on");
+  result = stepDrive(result.state, { type: "soc", soc: 46 });
+  assert.equal(result.state.phase, "battery");
+  assert.equal(result.plan, "force-off");
+});
+
+test("a refused hold keeps the selected mode and plans force-on", () => {
+  const refused = stepDrive(drive({ mode: "cycle", phase: "battery", soc: 50, previousPlan: "force-off" }), { type: "refuse" });
+  assert.equal(refused.state.mode, "cycle");
+  assert.equal(refused.plan, "force-on");
+  assert.notEqual(refused.plan, "release");
+  const stopped = onHoldRefused([
+    { cmd: FORCE_OFF, tag: "hold" },
+    { cmd: "01 0C", tag: "rpm" },
+  ], false);
+  assert.equal(stopped.commands.includes(RELEASE), false);
+  assert.equal(stopped.queue.some((item) => item.tag === "hold"), false);
+});
+
+test("crank rpm 200 does not produce force-off while a mode is selected", () => {
+  for (const mode of ["electric", "engine", "cycle"]) {
+    const command = linkCommand({
+      mode,
+      phase: mode === "cycle" ? "battery" : "engine",
+      plan: "force-off",
+      rpm: 200,
+      previousRpm: 0,
+      samples: [50, 50],
+      ageMs: 5000,
+    });
+    assert.equal(command, "force-on");
+    assert.notEqual(command, "force-off");
+  }
+  const stopped = linkCommand({
+    mode: "electric",
+    phase: "battery",
+    plan: "force-off",
+    rpm: 0,
+    previousRpm: 0,
+    samples: [50, 50],
+    ageMs: 5000,
+  });
+  assert.equal(stopped, "force-off");
+});
+
+test("a full unused pack latches and a parked 100 percent at 0 rpm does not", () => {
+  assert.equal(unusedPack(false, { soc: 98, rpm: 400, current: 1 }), true);
+  assert.equal(unusedPack(false, { soc: 100, rpm: 900, current: -4 }), true);
+  assert.equal(unusedPack(false, { soc: 100, rpm: 0, current: 0 }), false);
+  assert.equal(unusedPack(true, { soc: 99, rpm: 800, current: 5 }), false);
+  assert.equal(unusedPack(true, { soc: 97.9, rpm: 800, current: 1 }), false);
+  assert.equal(unusedPack(true, { soc: 99, rpm: 800, current: 4.9 }), true);
+  const latched = linkCommand({
+    mode: "electric",
+    phase: "battery",
+    plan: "force-off",
+    latched: true,
+    rpm: 800,
+    previousRpm: 800,
+    samples: [99, 99],
+    ageMs: 5000,
+  });
+  assert.equal(latched, "force-on");
+  const parked = linkCommand({
+    mode: "electric",
+    phase: "battery",
+    plan: "force-off",
+    latched: unusedPack(false, { soc: 100, rpm: 0, current: 0 }),
+    rpm: 0,
+    previousRpm: 0,
+    samples: [100, 100],
+    ageMs: 5000,
+  });
+  assert.equal(parked, "force-off");
+  const missing = linkCommand({
+    mode: "electric",
+    plan: "force-off",
+    rpm: 0,
+    samples: [],
+    ageMs: 3000,
+  });
+  assert.equal(missing, "force-on");
+  assert.notEqual(missing, "release");
+});
+
+test("background listeners do not drop the hold", () => {
+  const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
+  assert.equal(app.includes("askPedal = false"), false);
+  const onFn = app.slice(app.indexOf("function considerOn"), app.indexOf("function considerHold"));
+  const holdFn = app.slice(app.indexOf("function considerHold"), app.indexOf("function enact"));
+  assert.equal(onFn.includes("visibilityState"), false);
+  assert.equal(holdFn.includes("visibilityState"), false);
+  assert.equal(app.includes('addEventListener("pagehide", saveTrip)'), true);
+  assert.equal(app.includes('addEventListener("freeze", saveTrip)'), true);
+  assert.equal(app.includes("resumeLink"), true);
+  assert.equal(app.includes("typeof AndroidBLE"), true);
+  assert.equal(app.includes('title: "Volt"'), true);
+  const miss = app.slice(app.indexOf('job.tag === "rpm" && timedOut'), app.indexOf("const parsed"));
+  assert.equal(miss.includes('enact("release")'), false);
+  assert.equal(miss.includes("clearProof()"), false);
+  const sw = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
+  assert.equal(sw.includes("voltpanel-38"), true);
+  assert.equal(sw.includes("/js/app.js?v=32"), true);
+  assert.equal(sw.includes("/js/protocol.js?v=32"), true);
 });
 
 test("engine stretch miles stay on the trip and off the electric miles", () => {

@@ -31,13 +31,14 @@ import {
   tripStep,
   writePlan,
   holdGate,
-  holdThroughCrank,
   emptyFloor,
   floorAssist,
   floorBus,
   floorCommandsEngine,
   floorFace,
-} from "./protocol.js?v=31";
+  linkCommand,
+  unusedPack,
+} from "./protocol.js?v=32";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -130,13 +131,43 @@ let retryGen = 0;
 let radioOn = null;
 let statusError = "";
 let wakeLock = null;
+let socWindow = [];
+let linkReadyAt = 0;
+let packLatched = false;
+let stayReported = null;
+let resumePending = false;
+let audioCtx = null;
+let audioOsc = null;
+let audioGain = null;
+let audioArmed = false;
 
 function setText(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
 }
 
 function floorShowing() {
-  return !shotMode && floor.active && floorCommandsEngine(drive.boost, drive.soc);
+  return !shotMode && (packLatched || (floor.active && floorCommandsEngine(drive.boost, drive.soc)));
+}
+
+function modeSelected() {
+  return drive.mode === "electric" || drive.mode === "engine" || drive.mode === "cycle";
+}
+
+function chargeStable() {
+  if (socWindow.length < 2) return false;
+  return Math.abs(socWindow[socWindow.length - 2] - socWindow[socWindow.length - 1]) <= 2;
+}
+
+function noteCharge(soc) {
+  if (typeof soc !== "number" || !Number.isFinite(soc)) return;
+  socWindow.push(soc);
+  if (socWindow.length > 2) socWindow.shift();
+}
+
+function resetLinkGate() {
+  socWindow = [];
+  linkReadyAt = 0;
+  packLatched = false;
 }
 
 function paintModes() {
@@ -282,13 +313,17 @@ function loadDrive() {
     }
     localStorage.removeItem("voltpanel.lockUntil");
     localStorage.removeItem("voltpanel.electric");
+    const phase = restorePhase(mode, localStorage.getItem("voltpanel.phase"));
+    const opening = mode === "engine" || (mode === "cycle" && phase === "engine")
+      ? "force-on"
+      : (mode === "electric" || mode === "cycle" ? "force-off" : "none");
     return {
       mode,
       boost: localStorage.getItem("voltpanel.boost") === "1",
-      phase: restorePhase(mode, localStorage.getItem("voltpanel.phase")),
+      phase,
       soc: null,
       lockUntil: null,
-      previousPlan: mode === "electric" ? "force-off" : "none",
+      previousPlan: opening,
       sustain: localStorage.getItem("voltpanel.sustain") === "1",
     };
   } catch {
@@ -369,6 +404,7 @@ function finalPlan(fallback) {
     forceOnOk: !forceOnRejected,
   });
   if (quiet !== "none") return quiet;
+  if (modeSelected()) return fallback;
   if (busKind === "on" && fallback !== "force-off" && fallback !== "force-on") return "release";
   return fallback;
 }
@@ -386,9 +422,30 @@ function syncFloor(event) {
 }
 
 function driveEnact(plan) {
-  const bus = floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc);
-  if (bus === "force-on") {
+  packLatched = unusedPack(packLatched, {
+    soc: state.soc,
+    rpm: state.rpm,
+    current: state.current,
+  });
+  const stretch = floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc) === "force-on";
+  const command = linkCommand({
+    mode: drive.mode,
+    phase: drive.phase,
+    plan,
+    latched: packLatched,
+    stretch,
+    rpm: proofRpm,
+    previousRpm,
+    samples: socWindow,
+    ageMs: linkReadyAt ? Date.now() - linkReadyAt : 0,
+  });
+  const modeWantsOn = drive.mode === "engine" || (drive.mode === "cycle" && drive.phase === "engine");
+  if (command === "force-on" && plan !== "force-on" && !modeWantsOn) {
     enact("force-on", true);
+    return;
+  }
+  if (command === "force-on" || command === "force-off" || command === "release") {
+    enact(command);
     return;
   }
   enact(plan);
@@ -410,9 +467,8 @@ function considerOn(forceNow) {
 function considerHold(forceNow) {
   if (!linked()) return;
   const gate = holdGate(previousRpm, proofRpm);
-  if (gate === "wait") return;
-  if (gate === "release" && !holdThroughCrank(drive)) {
-    if (asserted || busKind === "off") enact("release");
+  if (gate !== "hold" || !chargeStable()) {
+    if (modeSelected()) considerOn(busKind !== "on");
     return;
   }
   const now = Date.now();
@@ -489,6 +545,8 @@ function paintAdapter() {
   if (bluetoothMissing()) {
     setText(adapterEl, "No Bluetooth");
     paintConnect({ connected: false });
+    syncAudio();
+    reportSession();
     return;
   }
   const connected = !!(device && device.gatt && device.gatt.connected);
@@ -508,6 +566,8 @@ function paintAdapter() {
     noReply: connected && noReply,
     name: device ? (device.name || "Adapter") : "",
   });
+  syncAudio();
+  reportSession();
 }
 
 function sessionUp() {
@@ -605,6 +665,7 @@ function clearProof() {
 function onLinkDrop(next) {
   if (device !== next) return;
   clearProof();
+  resetLinkGate();
   linkGen += 1;
   clearInterval(pollTimer);
   clearQueue();
@@ -812,24 +873,22 @@ function onReply(job, text, timedOut) {
   if (job.cmd === "ATZ") header = "";
   if (job.tag === "hold" && !timedOut && holdRefused(text)) {
     queue = onHoldRefused(queue, false).queue;
-    applyDrive({ type: "refuse" });
+    if (modeSelected()) applyDrive({ type: "refuse" });
+    else enact(finalPlan("release"));
     paintLive();
     return;
   }
   if (job.tag === "on" && !timedOut && holdRefused(text)) {
     forceOnRejected = true;
     queue = queue.filter((item) => item.tag !== "on");
-    enact(finalPlan("release"));
+    if (modeSelected()) driveEnact(finalPlan("force-on"));
+    else enact(finalPlan("release"));
     paintLive();
     return;
   }
   if (job.tag === "rpm" && timedOut && linked()) {
     rpmMisses += 1;
-    if (rpmMisses >= 3) {
-      const held = asserted || busKind !== "none";
-      clearProof();
-      if (held) enact("release");
-    }
+    if (rpmMisses >= 3 && modeSelected()) driveEnact(finalPlan(keptPlan()));
   }
   const parsed = timedOut ? {} : parseReply(text);
   if (parsed.rpm != null) state.rpm = parsed.rpm;
@@ -841,13 +900,8 @@ function onReply(job, text, timedOut) {
   if (parsed.speedKmh != null) state.speedKmh = parsed.speedKmh;
   const wasActive = floor.active;
   const nowMs = Date.now();
-  if (job.tag === "pedal") {
-    if (!timedOut && parsed.pedalPct != null) {
-      syncFloor({ type: "pedal", pedalPct: parsed.pedalPct, now: nowMs });
-    } else if (!timedOut && replySilent(text)) {
-      askPedal = false;
-      syncFloor({ type: "pedal", pedalPct: null, now: nowMs });
-    }
+  if (job.tag === "pedal" && !timedOut && parsed.pedalPct != null) {
+    syncFloor({ type: "pedal", pedalPct: parsed.pedalPct, now: nowMs });
   }
   if (job.tag === "speed" && !timedOut && parsed.speedKmh != null) {
     syncFloor({ type: "speed", speedKmh: parsed.speedKmh, now: nowMs });
@@ -882,7 +936,10 @@ function onReply(job, text, timedOut) {
   if (parsed.current != null) state.current = parsed.current;
   if (state.voltage != null && state.current != null) state.kw = kilowatts(state.voltage, state.current);
   if (parsed.rpm != null || parsed.voltage != null || parsed.speedKmh != null) state.live = true;
-  if (parsed.soc != null) state.soc = parsed.soc;
+  if (parsed.soc != null) {
+    state.soc = parsed.soc;
+    noteCharge(parsed.soc);
+  }
   if (parsed.soc != null || (wasActive && !floor.active)) {
     applyDrive({ type: "soc", soc: state.soc });
   } else {
@@ -944,10 +1001,14 @@ async function attach(next) {
   paintAdapter();
   for (const cmd of INIT) enqueue(cmd, "init");
   startPoll();
+  socWindow = [];
+  linkReadyAt = Date.now();
+  packLatched = false;
   driveEnact(finalPlan(keptPlan()));
-  if (!queue.some((job) => job.tag === "release")) {
+  if (!modeSelected() && !queue.some((job) => job.tag === "release")) {
     for (const cmd of attachRelease(drive)) enqueue(cmd, cmd.startsWith("ATSH") ? "hdr" : "release");
   }
+  reportSession();
 }
 
 function bindGatt(next) {
@@ -998,6 +1059,9 @@ function disconnect() {
   askPedal = true;
   lastTripEngine = false;
   clearProof();
+  resetLinkGate();
+  stayReported = null;
+  stopSilentAudio();
   promptSeen = false;
   noReply = false;
   buffer = "";
@@ -1221,6 +1285,88 @@ function lockScale() {
   }, { passive: false });
 }
 
+function armAudio() {
+  audioArmed = true;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!audioCtx) audioCtx = new Ctx();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+}
+
+function startSilentAudio() {
+  if (!audioArmed || !sessionUp() || document.visibilityState === "visible") return;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!audioCtx) audioCtx = new Ctx();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  if (!audioOsc) {
+    audioGain = audioCtx.createGain();
+    audioGain.gain.value = 0;
+    audioOsc = audioCtx.createOscillator();
+    audioOsc.frequency.value = 1;
+    audioOsc.connect(audioGain);
+    audioGain.connect(audioCtx.destination);
+    try { audioOsc.start(); } catch { /* already started */ }
+  }
+  if ("mediaSession" in navigator && typeof MediaMetadata === "function") {
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: "Volt" });
+      navigator.mediaSession.playbackState = "playing";
+    } catch { /* no session */ }
+  }
+}
+
+function stopSilentAudio() {
+  if (audioOsc) {
+    try { audioOsc.stop(); } catch { /* already stopped */ }
+    try { audioOsc.disconnect(); } catch { /* already gone */ }
+  }
+  audioOsc = null;
+  if (audioGain) {
+    try { audioGain.disconnect(); } catch { /* already gone */ }
+  }
+  audioGain = null;
+  if ("mediaSession" in navigator) {
+    try {
+      navigator.mediaSession.playbackState = "none";
+      navigator.mediaSession.metadata = null;
+    } catch { /* no session */ }
+  }
+}
+
+function syncAudio() {
+  if (document.visibilityState === "visible" || !sessionUp()) stopSilentAudio();
+  else startSilentAudio();
+}
+
+function reportSession() {
+  const up = sessionUp();
+  if (stayReported === up) return;
+  const bridge = typeof AndroidBLE === "undefined" ? null : AndroidBLE;
+  if (!bridge || typeof bridge.session !== "function") return;
+  try {
+    bridge.session(up);
+    stayReported = up;
+  } catch {
+    /* browser page */
+  }
+}
+
+function resumeLink() {
+  if (shotMode || userGone || writeChar || reconnecting || resumePending) return;
+  let id = "";
+  try { id = localStorage.getItem("voltpanel.device") || ""; } catch { id = ""; }
+  if (!id || bluetoothMissing()) return;
+  resumePending = true;
+  holdWake();
+  reconnectSaved().then(() => {
+    resumePending = false;
+  }).catch((err) => {
+    resumePending = false;
+    noteConnectError(err);
+  });
+}
+
 function boot() {
   drive = loadDrive();
   loadTrip();
@@ -1247,6 +1393,7 @@ function boot() {
       userGone = false;
       statusError = "";
       retryCount = 0;
+      armAudio();
       holdWake();
       connectPicker().then(() => {
         if (userGone || reconnecting) return;
@@ -1256,8 +1403,18 @@ function boot() {
     }
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible" || !sessionUp()) return;
-    holdWake();
+    if (document.visibilityState === "visible") {
+      stopSilentAudio();
+      if (sessionUp()) holdWake();
+      resumeLink();
+      return;
+    }
+    if (sessionUp()) startSilentAudio();
+  });
+  window.addEventListener("pageshow", () => {
+    stopSilentAudio();
+    if (sessionUp()) holdWake();
+    resumeLink();
   });
   window.addEventListener("pagehide", saveTrip);
   document.addEventListener("freeze", saveTrip);
@@ -1278,14 +1435,7 @@ function boot() {
     radioOn = value;
     paintAdapter();
   });
-  document.addEventListener("pointerdown", () => {
-    if (sessionUp()) holdWake();
-    if (!writeChar && !reconnecting && localStorage.getItem("voltpanel.device")) {
-      userGone = false;
-      holdWake();
-      reconnectSaved().catch((err) => noteConnectError(err));
-    }
-  }, { once: true });
+  resumeLink();
 }
 
 for (const key of Object.keys(GAUGES)) {

@@ -76,12 +76,10 @@ export function holdFloor(boost) {
   return boost ? 22 : 45;
 }
 
-// A crank or a spindown above 22% stays on the engine-off hold. Releasing there loads the clutch.
+// Rpm 1–399 is a crank. The engine-off hold does not continue through it.
 export function holdThroughCrank(row) {
-  const item = row || {};
-  if (item.sustain === true) return false;
-  const soc = item.soc;
-  return typeof soc === "number" && Number.isFinite(soc) && soc > 22;
+  void row;
+  return false;
 }
 
 function numeric(value) {
@@ -130,20 +128,16 @@ function leaveHold(next) {
   return { state: next, plan: "none" };
 }
 
-// MyVoltControl engine-on. Above 40% and below 46% it is the light run.
-// At 46% an on-command is replaced by the engine-off hold. At 40% and below it is not sent.
+// Engine mode and a charge phase send engine-on at every charge level, including an empty reading.
 function engineOn(next) {
-  const soc = next.soc;
-  if (numeric(soc) && soc > 40 && soc < 46) return finish(next, "force-on");
-  if (numeric(soc) && soc >= 46 && next.previousPlan === "force-on") return finish(next, "force-off");
-  return leaveHold(next);
+  return finish(next, "force-on");
 }
 
 function engineShowing(next) {
   return next.mode === "engine" || (next.mode === "cycle" && next.phase === "engine");
 }
 
-// Boost is done. The engine phase then runs until 46%. Below 40% that phase does not send engine-on.
+// Boost is done. The charge phase then sends engine-on until 46%.
 function endBoost(next) {
   next.boost = false;
   next.lockUntil = null;
@@ -256,8 +250,9 @@ export function stepDrive(state, event) {
     return finish(next, "force-off");
   }
   if (kind === "refuse") {
-    next.mode = "off";
-    next.phase = "battery";
+    if (next.mode === "electric" || next.mode === "engine" || next.mode === "cycle") {
+      return finish(next, "force-on");
+    }
     return leaveHold(next);
   }
   if (kind === "soc") {
@@ -469,8 +464,9 @@ export function milesPerHour(speedKmh) {
   return speedKmh * 0.621371;
 }
 
-export const FLOOR_PCT = 95;
+export const FLOOR_PCT = 40;
 export const FLOOR_HOLD_MS = 10000;
+export const LINK_CHARGE_MS = 3000;
 
 export function emptyFloor() {
   return {
@@ -490,8 +486,8 @@ function floorDown(row) {
   return row.pedalKnown === true && typeof row.pedalPct === "number" && row.pedalPct >= FLOOR_PCT;
 }
 
-// Constant power, not a straight line: 60 mph lands at 11.0 s, so expected speed is sqrt(prev² + 2kt) with k = 60² / (2×11), and that shape runs through 65 mph.
-// A floored pedal turns the engine on only when the next speed, in hundredths of a mile per hour, is under that curve.
+// Pedal at or above 40%, speed under 65 mph, and gain under 1 mph per second across at most 4 seconds.
+// A later faster sample does not cancel the stretch while the pedal stays down.
 export function floorAssist(state, event) {
   const row = Object.assign(emptyFloor(), state || {});
   const now = event && typeof event.now === "number" && Number.isFinite(event.now) ? event.now : 0;
@@ -537,10 +533,9 @@ export function floorAssist(state, event) {
     row.samples += 1;
     if (prevMph != null && typeof prevAt === "number" && Number.isFinite(prevAt) && mph != null && !row.blocked) {
       const dtSeconds = (now - prevAt) / 1000;
-      if (dtSeconds > 0 && dtSeconds <= 4 && prevMph < 65) {
-        const k = (60 * 60) / (2 * 11);
-        const expectedMph = Math.sqrt((prevMph * prevMph) + (2 * k * dtSeconds));
-        if (Math.round(mph * 100) < Math.round(expectedMph * 100)) {
+      if (dtSeconds > 0 && dtSeconds <= 4 && prevMph < 65 && mph < 65) {
+        const gain = (mph - prevMph) / dtSeconds;
+        if (gain < 1) {
           if (!row.active) row.t0 = now;
           row.active = true;
           row.held = true;
@@ -552,6 +547,51 @@ export function floorAssist(state, event) {
   }
   if (row.active && now >= row.t0 + FLOOR_HOLD_MS && !row.held) row.active = false;
   return { state: row, plan: row.active ? "engine" : "none" };
+}
+
+// Full pack, engine turning, and almost no current. A parked 100% at 0 rpm does not set it.
+export function unusedPack(latched, sample) {
+  const row = sample || {};
+  const soc = row.soc;
+  const rpm = row.rpm;
+  const current = row.current;
+  const socNum = typeof soc === "number" && Number.isFinite(soc);
+  const currentNum = typeof current === "number" && Number.isFinite(current);
+  let on = latched === true;
+  if (on) {
+    if (socNum && soc < 98) on = false;
+    if (currentNum && Math.abs(current) >= 5) on = false;
+  } else if (socNum && soc >= 98 && typeof rpm === "number" && Number.isFinite(rpm) && rpm >= 400 && currentNum && Math.abs(current) < 5) {
+    on = true;
+  }
+  return on;
+}
+
+function desiredHold(mode, phase) {
+  if (mode === "engine" || (mode === "cycle" && phase === "engine")) return "force-on";
+  if (mode === "electric" || mode === "cycle") return "force-off";
+  return "none";
+}
+
+// While a mode is selected the bus is force-on or force-off. Release is only for no mode.
+export function linkCommand(input) {
+  const row = input || {};
+  const mode = row.mode === "electric" || row.mode === "engine" || row.mode === "cycle" ? row.mode : "off";
+  if (mode === "off") return row.plan === "release" ? "release" : "none";
+  if (row.latched === true || row.stretch === true) return "force-on";
+  const rpm = typeof row.rpm === "number" && Number.isFinite(row.rpm) ? row.rpm : null;
+  if (rpm != null && rpm > 0 && rpm < 400) return "force-on";
+  let desired = row.plan === "force-on" || row.plan === "force-off" ? row.plan : null;
+  if (row.plan === "release" || desired == null) desired = desiredHold(mode, row.phase);
+  if (desired !== "force-off") return "force-on";
+  const samples = Array.isArray(row.samples) ? row.samples : [];
+  const older = samples.length >= 2 ? Number(samples[samples.length - 2]) : NaN;
+  const newer = samples.length >= 2 ? Number(samples[samples.length - 1]) : NaN;
+  const stable = Number.isFinite(older) && Number.isFinite(newer) && Math.abs(older - newer) <= 2;
+  const age = typeof row.ageMs === "number" && Number.isFinite(row.ageMs) ? row.ageMs : 0;
+  if (samples.length === 0 && age >= LINK_CHARGE_MS) return "force-on";
+  if (!stable || holdGate(row.previousRpm, rpm) !== "hold") return "force-on";
+  return "force-off";
 }
 
 // Battery Reserve keeps the mode already on the bus until the pack is at 22% or below.
