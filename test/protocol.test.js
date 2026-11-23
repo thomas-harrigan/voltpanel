@@ -47,6 +47,9 @@ import {
   decodePedal,
   linkCommand,
   unusedPack,
+  pollTick,
+  commitWrite,
+  FLOOR_PCT,
 } from "../js/protocol.js";
 
 function drive(partial) {
@@ -479,7 +482,7 @@ test("engine frames are the two published payloads", () => {
   const app = readFileSync(new URL("../js/app.js", import.meta.url), "utf8");
   assert.equal(app.includes('setItem("voltpanel.lockUntil"'), false);
   assert.equal(app.includes('removeItem("voltpanel.lockUntil")'), true);
-  assert.equal(app.includes("protocol.js?v=32"), true);
+  assert.equal(app.includes("protocol.js?v=33"), true);
   assert.equal(app.includes('enact("force-on", true)'), true);
   assert.equal(app.includes('if (!fromFloor) drive.previousPlan = "force-on"'), true);
   assert.equal(app.includes("01 49"), true);
@@ -808,27 +811,93 @@ test("a flat press under 65 sends the same engine-on frame as 45% charge", () =>
   assert.equal(still.plan, "none");
 });
 
-test("a 40 percent pedal and a slow gain arms the stretch", () => {
+test("a 40 percent pedal and a one mile per hour line do not arm the stretch", () => {
   const kmh = (mph) => mph / 0.621371;
   const run = (pedal, prevMph, actualMph, dt = 1000) => {
     let state = floorDown(emptyFloor(), pedal);
     state = floorAssist(state, { type: "speed", speedKmh: kmh(prevMph), now: 0 }).state;
     return floorAssist(state, { type: "speed", speedKmh: kmh(actualMph), now: dt });
   };
-  const armed = run(40, 30, 30.5);
+  assert.equal(FLOOR_PCT, 95);
+  assert.equal(run(40, 30, 30.5).plan, "none");
+  const armed = run(95, 30, 32);
   assert.equal(armed.plan, "engine");
   assert.equal(armed.state.samples > 1, true);
   assert.equal(floorBus(armed.plan, false, 50), "force-on");
   assert.equal(floorBus(armed.plan, true, 30), null);
   assert.equal(floorBus(armed.plan, true, 22), "force-on");
+  assert.equal(run(95, 30, 40).plan, "none");
   assert.equal(run(20, 30, 30.2).plan, "none");
-  assert.equal(run(40, 30, 30.2, 5000).plan, "none");
-  assert.equal(run(40, 70, 70).plan, "none");
-  assert.equal(run(40, 30, 32).plan, "none");
+  assert.equal(run(95, 30, 30.2, 5000).plan, "none");
+  assert.equal(run(95, 70, 70).plan, "none");
   const faster = floorAssist(armed.state, { type: "speed", speedKmh: kmh(40), now: 2000 });
   assert.equal(faster.plan, "engine");
   assert.equal(faster.state.active, true);
   assert.equal(FORCE_ON, "AE 31 06 00 00 00 00");
+});
+
+test("a floored pedal behind the 11-second curve arms the engine", () => {
+  const kmh = (mph) => mph / 0.621371;
+  const run = (pedal, prevMph, actualMph, dt = 1000) => {
+    let state = floorDown(emptyFloor(), pedal);
+    state = floorAssist(state, { type: "speed", speedKmh: kmh(prevMph), now: 0 }).state;
+    return floorAssist(state, { type: "speed", speedKmh: kmh(actualMph), now: dt });
+  };
+  const floored = decodePedal(243);
+  assert.ok(floored >= 95);
+  assert.ok(decodePedal(242) < 95);
+  const armed = run(floored, 10, 10, 1000);
+  assert.equal(armed.plan, "engine");
+  assert.equal(armed.state.active, true);
+  assert.equal(run(94, 10, 10, 1000).plan, "none");
+  assert.equal(run(floored, 10, 10, 4000).plan, "engine");
+  assert.equal(run(floored, 10, 10, 4001).plan, "none");
+  assert.equal(run(floored, 65, 65, 1000).plan, "none");
+  const held = floorAssist(armed.state, { type: "speed", speedKmh: kmh(40), now: 2000 });
+  assert.equal(held.plan, "engine");
+  assert.equal(held.state.active, true);
+});
+
+test("a floored poll asks speed and pedal before the other PIDs", () => {
+  const rows = [
+    ["7DF", "01 0C", "rpm"],
+    ["7DF", "01 0D", "speed"],
+    ["7DF", "01 49", "pedal"],
+    ["7DF", "01 5E", "fuel"],
+    ["7E0", "01 10", "maf"],
+    ["7DF", "01 5B", "soc"],
+    ["7E1", "22 2429", "voltage"],
+    ["7E1", "22 2414", "current"],
+  ];
+  const first = pollTick(rows, 0, { floored: true, askFuel: true, askPedal: true });
+  assert.deepEqual(first.jobs.map((row) => row[2]), ["speed", "pedal", "rpm"]);
+  let index = 0;
+  const others = [];
+  for (let n = 0; n < 6; n += 1) {
+    const step = pollTick(rows, index, { floored: true, askFuel: true, askPedal: true });
+    assert.equal(step.jobs[0][2], "speed");
+    assert.equal(step.jobs[1][2], "pedal");
+    others.push(step.jobs[2][2]);
+    index = step.index;
+  }
+  assert.deepEqual(others.slice().sort(), ["current", "fuel", "maf", "rpm", "soc", "voltage"]);
+  const plain = pollTick(rows, 0, { floored: false, askFuel: true, askPedal: true });
+  assert.deepEqual(plain.jobs.map((row) => row[2]), ["rpm"]);
+  const skipped = pollTick(rows, 3, { floored: false, askFuel: false, askPedal: true });
+  assert.equal(skipped.jobs[0][2], "maf");
+});
+
+test("a committed pedal keeps 7DF when the adapter is on 7E1", () => {
+  const pedal = { cmd: "01 49", tag: "pedal", head: "7DF" };
+  const speed = { cmd: "01 0D", tag: "speed", head: "7DF" };
+  const hold = commitWrite("7DF", { cmd: "ATSH 7E1", tag: "hdr" });
+  assert.deepEqual(hold.commands, ["ATSH 7E1"]);
+  assert.equal(pedal.head, "7DF");
+  assert.equal(speed.head, "7DF");
+  assert.deepEqual(commitWrite("7E1", pedal).commands, ["ATSH 7DF", "01 49"]);
+  assert.deepEqual(commitWrite("7E1", speed).commands, ["ATSH 7DF", "01 0D"]);
+  assert.deepEqual(commitWrite("7DF", pedal).commands, ["01 49"]);
+  assert.equal(pedal.head, "7DF");
 });
 
 test("the stretch is 10 seconds or the press, whichever is longer", () => {
@@ -986,9 +1055,9 @@ test("background listeners do not drop the hold", () => {
   assert.equal(miss.includes('enact("release")'), false);
   assert.equal(miss.includes("clearProof()"), false);
   const sw = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
-  assert.equal(sw.includes("voltpanel-39"), true);
-  assert.equal(sw.includes("/js/app.js?v=33"), true);
-  assert.equal(sw.includes("/js/protocol.js?v=32"), true);
+  assert.equal(sw.includes("voltpanel-40"), true);
+  assert.equal(sw.includes("/js/app.js?v=34"), true);
+  assert.equal(sw.includes("/js/protocol.js?v=33"), true);
 });
 
 test("engine stretch miles stay on the trip and off the electric miles", () => {

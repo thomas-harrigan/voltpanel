@@ -464,7 +464,7 @@ export function milesPerHour(speedKmh) {
   return speedKmh * 0.621371;
 }
 
-export const FLOOR_PCT = 40;
+export const FLOOR_PCT = 95;
 export const FLOOR_HOLD_MS = 10000;
 export const LINK_CHARGE_MS = 3000;
 
@@ -486,8 +486,8 @@ function floorDown(row) {
   return row.pedalKnown === true && typeof row.pedalPct === "number" && row.pedalPct >= FLOOR_PCT;
 }
 
-// Pedal at or above 40%, speed under 65 mph, and gain under 1 mph per second across at most 4 seconds.
-// A later faster sample does not cancel the stretch while the pedal stays down.
+// Constant power, not a straight line: 60 mph lands at 11.0 s, so expected speed is sqrt(prev² + 2kt) with k = 60² / (2×11), and that shape runs through 65 mph.
+// A floored pedal turns the engine on only when the next speed, in hundredths of a mile per hour, is under that curve.
 export function floorAssist(state, event) {
   const row = Object.assign(emptyFloor(), state || {});
   const now = event && typeof event.now === "number" && Number.isFinite(event.now) ? event.now : 0;
@@ -533,9 +533,10 @@ export function floorAssist(state, event) {
     row.samples += 1;
     if (prevMph != null && typeof prevAt === "number" && Number.isFinite(prevAt) && mph != null && !row.blocked) {
       const dtSeconds = (now - prevAt) / 1000;
-      if (dtSeconds > 0 && dtSeconds <= 4 && prevMph < 65 && mph < 65) {
-        const gain = (mph - prevMph) / dtSeconds;
-        if (gain < 1) {
+      if (dtSeconds > 0 && dtSeconds <= 4 && prevMph < 65) {
+        const k = (60 * 60) / (2 * 11);
+        const expectedMph = Math.sqrt((prevMph * prevMph) + (2 * k * dtSeconds));
+        if (Math.round(mph * 100) < Math.round(expectedMph * 100)) {
           if (!row.active) row.t0 = now;
           row.active = true;
           row.held = true;
@@ -605,6 +606,58 @@ export function floorBus(plan, boost, soc) {
   if (plan !== "engine") return null;
   if (!floorCommandsEngine(boost, soc)) return null;
   return "force-on";
+}
+
+// While the last pedal is floored, this tick asks speed, then pedal, then one other PID.
+export function pollTick(rows, index, options) {
+  const list = Array.isArray(rows) ? rows : [];
+  const count = list.length;
+  if (!count) return { jobs: [], index: 0 };
+  const opts = options || {};
+  const askFuel = opts.askFuel !== false;
+  const askPedal = opts.askPedal !== false;
+  const floored = opts.floored === true;
+  let cursor = Number(index);
+  if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
+  const skipped = (tag) => (tag === "fuel" && !askFuel) || (tag === "pedal" && !askPedal);
+  if (!floored) {
+    for (let n = 0; n < count; n += 1) {
+      const row = list[cursor % count];
+      cursor += 1;
+      if (skipped(row[2])) continue;
+      return { jobs: [row], index: cursor };
+    }
+    return { jobs: [], index: cursor };
+  }
+  const jobs = [];
+  const speed = list.find((row) => row[2] === "speed");
+  const pedal = list.find((row) => row[2] === "pedal");
+  if (speed) jobs.push(speed);
+  if (pedal && !skipped("pedal")) jobs.push(pedal);
+  for (let n = 0; n < count; n += 1) {
+    const row = list[cursor % count];
+    cursor += 1;
+    if (row[2] === "speed" || row[2] === "pedal") continue;
+    if (skipped(row[2])) continue;
+    jobs.push(row);
+    break;
+  }
+  return { jobs, index: cursor };
+}
+
+// Header is the one last written. A committed pedal or speed job keeps its own header.
+export function commitWrite(header, job) {
+  const row = job || {};
+  const cmd = String(row.cmd || "");
+  const now = header || "";
+  const commands = [];
+  if (row.tag !== "hdr" && row.head && row.head !== now) commands.push("ATSH " + row.head);
+  if (cmd) commands.push(cmd);
+  let next = now;
+  for (const line of commands) {
+    if (line.startsWith("ATSH ")) next = line.slice(5).trim();
+  }
+  return { commands, header: next };
 }
 
 export function floorFace(mode, phase, assist) {

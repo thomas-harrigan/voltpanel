@@ -38,7 +38,10 @@ import {
   floorFace,
   linkCommand,
   unusedPack,
-} from "./protocol.js?v=32";
+  pollTick,
+  commitWrite,
+  FLOOR_PCT,
+} from "./protocol.js?v=33";
 import { GAUGES, SHOTS, arcPath, dash, formatMiles, formatReading, outputGeometry, rpmColors, zoneColors } from "./gauges.js?v=8";
 
 const $ = (id) => document.getElementById(id);
@@ -421,19 +424,26 @@ function syncFloor(event) {
   return stepped.plan;
 }
 
+function stretchOn() {
+  return floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc) === "force-on";
+}
+
 function driveEnact(plan) {
   packLatched = unusedPack(packLatched, {
     soc: state.soc,
     rpm: state.rpm,
     current: state.current,
   });
-  const stretch = floorBus(floor.active ? "engine" : "none", drive.boost, drive.soc) === "force-on";
+  if (stretchOn()) {
+    enact("force-on", true);
+    return;
+  }
   const command = linkCommand({
     mode: drive.mode,
     phase: drive.phase,
     plan,
     latched: packLatched,
-    stretch,
+    stretch: false,
     rpm: proofRpm,
     previousRpm,
     samples: socWindow,
@@ -494,6 +504,11 @@ function enact(plan, fromFloor) {
     return;
   }
   if (plan === "release") {
+    if (stretchOn()) {
+      considerOn(busKind !== "on");
+      return;
+    }
+    if (modeSelected()) return;
     const was = busKind !== "none" || asserted || drive.previousPlan === "force-off";
     asserted = false;
     busKind = "none";
@@ -702,18 +717,13 @@ function closeSettings() {
 }
 
 function enqueue(cmd, tag, timeout) {
-  if (tag === "hdr") {
-    const want = cmd.slice(5);
-    if (want === header) return;
-    header = want;
-  }
   queue.push({ cmd, tag, timeout: timeout || (cmd === "ATZ" ? 2500 : 1200) });
   pump();
 }
 
 function enqueuePid(head, cmd, tag) {
-  if (head !== header) enqueue("ATSH " + head, "hdr", 800);
-  enqueue(cmd, tag, 1200);
+  queue.push({ cmd, tag, head, timeout: 1200 });
+  pump();
 }
 
 async function pump() {
@@ -723,7 +733,15 @@ async function pump() {
   let text = "";
   let timedOut = false;
   try {
-    text = await transact(job.cmd, job.timeout);
+    const turn = commitWrite(header, job);
+    for (let i = 0; i < turn.commands.length; i += 1) {
+      const cmd = turn.commands[i];
+      const last = i === turn.commands.length - 1;
+      const reply = await transact(cmd, last ? job.timeout : 800);
+      if (cmd.startsWith("ATSH ") && String(reply).includes(">")) header = cmd.slice(5).trim();
+      if (!last && !String(reply).includes(">")) throw new Error("header");
+      if (last) text = reply;
+    }
   } catch {
     text = "";
     timedOut = true;
@@ -874,6 +892,7 @@ function onReply(job, text, timedOut) {
   if (job.tag === "hold" && !timedOut && holdRefused(text)) {
     queue = onHoldRefused(queue, false).queue;
     if (modeSelected()) applyDrive({ type: "refuse" });
+    else if (stretchOn()) driveEnact(finalPlan("force-on"));
     else enact(finalPlan("release"));
     paintLive();
     return;
@@ -881,7 +900,7 @@ function onReply(job, text, timedOut) {
   if (job.tag === "on" && !timedOut && holdRefused(text)) {
     forceOnRejected = true;
     queue = queue.filter((item) => item.tag !== "on");
-    if (modeSelected()) driveEnact(finalPlan("force-on"));
+    if (modeSelected() || stretchOn()) driveEnact(finalPlan("force-on"));
     else enact(finalPlan("release"));
     paintLive();
     return;
@@ -952,14 +971,10 @@ function startPoll() {
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     if (holdPoll || !writeChar || queue.length > 4) return;
-    for (let n = 0; n < poll.length; n += 1) {
-      const [head, cmd, tag] = poll[pollIndex % poll.length];
-      pollIndex += 1;
-      if (tag === "fuel" && !askFuel) continue;
-      if (tag === "pedal" && !askPedal) continue;
-      enqueuePid(head, cmd, tag);
-      return;
-    }
+    const floored = floor.pedalKnown === true && typeof floor.pedalPct === "number" && floor.pedalPct >= FLOOR_PCT;
+    const step = pollTick(poll, pollIndex, { floored, askFuel, askPedal });
+    pollIndex = step.index;
+    for (const job of step.jobs) enqueuePid(job[0], job[1], job[2]);
   }, 200);
 }
 
