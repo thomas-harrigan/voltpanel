@@ -986,8 +986,8 @@ test("background listeners do not drop the hold", () => {
   assert.equal(miss.includes('enact("release")'), false);
   assert.equal(miss.includes("clearProof()"), false);
   const sw = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
-  assert.equal(sw.includes("voltpanel-38"), true);
-  assert.equal(sw.includes("/js/app.js?v=32"), true);
+  assert.equal(sw.includes("voltpanel-39"), true);
+  assert.equal(sw.includes("/js/app.js?v=33"), true);
   assert.equal(sw.includes("/js/protocol.js?v=32"), true);
 });
 

@@ -1197,13 +1197,13 @@ function openCodes() {
   clearing = false;
   $("clear-codes").classList.remove("armed");
   $("codes-list").replaceChildren();
-  setText($("codes-status"), "");
   $("codes").hidden = false;
   const mine = ++codesGen;
   if (!linked()) {
     setText($("codes-status"), "No Answer");
     return;
   }
+  setText($("codes-status"), "Reading");
   scheduleCodes(mine, () => readInto(mine, false));
 }
 
