@@ -1122,7 +1122,9 @@ test("background listeners do not drop the hold", () => {
   assert.equal(holdFn.includes("visibilityState"), false);
   assert.equal(app.includes('addEventListener("pagehide", saveTrip)'), true);
   assert.equal(app.includes('addEventListener("freeze", saveTrip)'), true);
-  assert.equal(app.includes("resumeLink"), true);
+  assert.equal(app.includes("resumeLink"), false);
+  assert.equal(app.includes("scheduleRetry"), false);
+  assert.equal(app.includes("reconnectSaved"), false);
   assert.equal(app.includes("typeof AndroidBLE"), true);
   assert.equal(app.includes('title: "Volt"'), true);
   const miss = app.slice(app.indexOf('job.tag === "rpm" && timedOut'), app.indexOf("const parsed"));
@@ -1134,8 +1136,8 @@ test("background listeners do not drop the hold", () => {
   assert.equal(app.includes("setTimeout(pump, 0)"), true);
   assert.equal(app.includes("now - lastOn < 2000"), true);
   assert.equal(app.includes("now - lastHold < 2000"), true);
-  assert.equal(sw.includes("voltpanel-42"), true);
-  assert.equal(sw.includes("/js/app.js?v=36"), true);
+  assert.equal(sw.includes("voltpanel-43"), true);
+  assert.equal(sw.includes("/js/app.js?v=37"), true);
   assert.equal(sw.includes("/js/protocol.js?v=35"), true);
   assert.equal(sw.includes("/icon.png?v=1"), true);
   assert.equal(sw.includes("/icon.svg"), false);

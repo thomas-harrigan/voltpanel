@@ -20,7 +20,6 @@ import {
   packLine,
   parseDtcResponse,
   parseReply,
-  reconnectPlan,
   releaseCommands,
   replySilent,
   stepDrive,
@@ -138,7 +137,6 @@ let socWindow = [];
 let linkReadyAt = 0;
 let packLatched = false;
 let stayReported = null;
-let resumePending = false;
 let audioCtx = null;
 let audioOsc = null;
 let audioGain = null;
@@ -638,39 +636,6 @@ async function noteConnectError(err) {
   if (!sessionUp()) releaseWake();
 }
 
-function scheduleRetry(next) {
-  const mine = ++retryGen;
-  const plan = reconnectPlan({ userDisconnect: userGone, attempts: retryCount });
-  if (!plan.retry || radioOn === false) {
-    reconnecting = false;
-    statusError = "";
-    paintAdapter();
-    releaseWake();
-    return;
-  }
-  retryCount += 1;
-  reconnecting = true;
-  statusError = "";
-  paintAdapter();
-  clearRetry();
-  retryTimer = setTimeout(() => {
-    retryTimer = 0;
-    if (mine !== retryGen || userGone || device !== next) return;
-    attach(next).then(() => {
-      if (mine !== retryGen || userGone || device !== next) return;
-    }).catch((err) => {
-      if (mine !== retryGen || userGone || device !== next) return;
-      if (noReply && device.gatt && device.gatt.connected) {
-        reconnecting = false;
-        retryCount = 0;
-        paintAdapter();
-        return;
-      }
-      scheduleRetry(next);
-    });
-  }, plan.wait);
-}
-
 function clearProof() {
   proofRpm = null;
   previousRpm = null;
@@ -697,13 +662,15 @@ function onLinkDrop(next) {
   buffer = "";
   discardNext = false;
   dropWaiters();
-  if (userGone) {
-    reconnecting = false;
-    statusError = "";
-    paintAdapter();
-    return;
-  }
-  scheduleRetry(next);
+  userGone = true;
+  retryGen += 1;
+  clearRetry();
+  reconnecting = false;
+  retryCount = 0;
+  statusError = "";
+  releaseWake();
+  stopSilentAudio();
+  paintAdapter();
 }
 
 function openSettings() {
@@ -1040,16 +1007,6 @@ async function connectPicker() {
   await attach(next);
 }
 
-async function reconnectSaved() {
-  if (bluetoothMissing() || !navigator.bluetooth.getDevices) return;
-  const id = localStorage.getItem("voltpanel.device");
-  if (!id) return;
-  const list = await navigator.bluetooth.getDevices();
-  const saved = list.find((item) => item.id === id);
-  if (!saved) return;
-  await attach(saved);
-}
-
 function disconnect() {
   userGone = true;
   retryGen += 1;
@@ -1372,21 +1329,6 @@ function reportSession() {
   }
 }
 
-function resumeLink() {
-  if (shotMode || userGone || writeChar || reconnecting || resumePending) return;
-  let id = "";
-  try { id = localStorage.getItem("voltpanel.device") || ""; } catch { id = ""; }
-  if (!id || bluetoothMissing()) return;
-  resumePending = true;
-  holdWake();
-  reconnectSaved().then(() => {
-    resumePending = false;
-  }).catch((err) => {
-    resumePending = false;
-    noteConnectError(err);
-  });
-}
-
 function boot() {
   drive = loadDrive();
   loadTrip();
@@ -1426,7 +1368,6 @@ function boot() {
     if (document.visibilityState === "visible") {
       stopSilentAudio();
       if (sessionUp()) holdWake();
-      resumeLink();
       return;
     }
     if (sessionUp()) startSilentAudio();
@@ -1434,7 +1375,6 @@ function boot() {
   window.addEventListener("pageshow", () => {
     stopSilentAudio();
     if (sessionUp()) holdWake();
-    resumeLink();
   });
   window.addEventListener("pagehide", saveTrip);
   document.addEventListener("freeze", saveTrip);
@@ -1455,7 +1395,6 @@ function boot() {
     radioOn = value;
     paintAdapter();
   });
-  resumeLink();
 }
 
 for (const key of Object.keys(GAUGES)) {
